@@ -1,0 +1,28 @@
+services:
+  collector:
+    build: ./collector
+    volumes:
+      - ./data:/data
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import duckdb; duckdb.connect('/data/raw_data.db', read_only=True).execute('SELECT 1')"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  model:
+    build: ./model
+    volumes:
+      - ./data:/data
+    env_file: .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    depends_on:
+      collector:
+        condition: service_healthy
