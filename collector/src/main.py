@@ -38,6 +38,7 @@ async def tick_loop(
     while not stop.is_set():
         dt, market_id, yes_price, no_price, btc_usd = client.snapshot()
         storage.insert_tick(conn, dt, market_id, yes_price, no_price, btc_usd)
+        storage.write_latest_tick(dt, market_id, yes_price, no_price, btc_usd)
         try:
             await asyncio.wait_for(stop.wait(), timeout=settings.tick_interval_seconds)
         except asyncio.TimeoutError:

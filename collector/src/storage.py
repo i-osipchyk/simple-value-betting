@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -62,6 +63,27 @@ def insert_tick(
         "INSERT INTO ticks VALUES (?, ?, ?, ?, ?)",
         [dt, market_id, yes_price, no_price, btc_usd],
     )
+
+
+def write_latest_tick(
+    dt: datetime,
+    market_id: str,
+    yes_price: float | None,
+    no_price: float | None,
+    btc_usd: float | None,
+) -> None:
+    """Atomically overwrite /data/latest_tick.json so the model container can read it."""
+    payload = {
+        "datetime": dt.isoformat(),
+        "market_id": market_id,
+        "yes_price": yes_price,
+        "no_price": no_price,
+        "btc_usd": btc_usd,
+    }
+    dest = Path(settings.local_data_dir) / "latest_tick.json"
+    tmp = dest.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.rename(dest)  # atomic on POSIX
 
 
 def export_batch(conn: duckdb.DuckDBPyConnection, since: datetime) -> Path | None:

@@ -6,14 +6,11 @@ services:
     env_file: .env
     restart: unless-stopped
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import duckdb; duckdb.connect('/data/raw_data.db', read_only=True).execute('SELECT 1')"
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "sh", "-c", "test -f /data/raw_data.db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   model:
     build: ./model

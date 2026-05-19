@@ -1,8 +1,8 @@
-# Architecture — Polymarket ML Trading System
+# Architecture
 
 ## Overview
 
-A two-container ML pipeline that collects real-time market data from Polymarket, trains multiple classification models in parallel to predict market resolution, generates predictions with edge signals, and stores everything for analysis. Designed for local development with a clean path to AWS deployment. Built to be extended with live trading execution.
+Two Docker containers sharing a bind-mounted `/data/` volume. The collector streams live market data and writes it to disk every second; the model reads that data to run continuous inference and retrain after each completed candle.
 
 ---
 
@@ -12,261 +12,154 @@ A two-container ML pipeline that collects real-time market data from Polymarket,
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Docker Compose                               │
 │                                                                     │
-│  ┌─────────────────────────┐      ┌──────────────────────────────┐  │
-│  │   collector             │      │   model                      │  │
-│  │                         │      │                              │  │
-│  │  Polymarket WebSocket   │      │  FastAPI                     │  │
-│  │   ├─ yes/no prices      │      │   ├─ POST /train             │  │
-│  │   └─ btc/usd (CL feed)  │      │   ├─ POST /predict           │  │
-│  │         │               │      │   └─ GET  /status            │  │
-│  │         ▼               │      │         │                    │  │
-│  │      DuckDB             │      │  Feature Pipeline            │  │
-│  │   raw_data.db           │      │  Model Registry              │  │
-│  │         │               │      │  predictions.db              │  │
-│  │   every 5min            │      │         │                    │  │
-│  │         ▼               │      │   every N hours              │  │
-│  │   /data/raw/*.parquet   │      │         ▼                    │  │
-│  └─────────────────────────┘      │   /data/models/              │  │
-│              │                    │   /data/predictions/*.parquet│  │
-│              └──────────┬─────────┘──────────────────────────────┘  │
-│                         │                                           │
-│                  shared volume                                      │
-│                  /data/                                             │
+│  ┌──────────────────────────┐     ┌───────────────────────────────┐ │
+│  │   collector              │     │   model                       │ │
+│  │                          │     │                               │ │
+│  │  Polymarket WebSocket    │     │  [task 1] watcher             │ │
+│  │   ├─ yes/no prices       │     │   watches /data/raw/          │ │
+│  │   └─ BTC/USD (CL feed)   │     │   on new parquet:             │ │
+│  │          │               │     │    - resolves open trades     │ │
+│  │          ▼               │     │    - retrains model           │ │
+│  │       DuckDB             │     │    - predicts for new candle  │ │
+│  │    raw_data.db           │     │                               │ │
+│  │          │               │     │  [task 2] inference loop      │ │
+│  │    every 5 min ──────────┼────▶│   reads latest_tick.json      │ │
+│  │    /data/raw/*.parquet   │     │   every second                │ │
+│  │                          │     │   opens trade if edge found   │ │
+│  │    every second ─────────┼────▶│                               │ │
+│  │    /data/latest_tick.json│     │  [task 3] FastAPI :8000       │ │
+│  │                          │     │   POST /train                 │ │
+│  └──────────────────────────┘     │   POST /predict               │ │
+│                                   │   GET  /models                │ │
+│                                   │   GET  /status                │ │
+│                                   └───────────────────────────────┘ │
+│                                                                     │
+│                       shared volume /data/                          │
 └─────────────────────────────────────────────────────────────────────┘
-                          │
-                  ENV=aws │
-                          ▼
-                    ┌───────────┐
-                    │    S3     │
-                    │  /raw/    │
-                    │  /models/ │
-                    │  /preds/  │
-                    └───────────┘
 ```
 
 ---
 
 ## Container 1: Collector
 
-**Responsibility:** Auto-discover the current 5-minute BTC market from the Polymarket Gamma API, connect to the CLOB WebSocket, collect raw tick data every second, persist to DuckDB, and export a parquet batch at each candle boundary.
+**Responsibility:** Auto-discover the current 5-minute BTC market, stream tick data every second, and export a parquet batch at each candle boundary.
+
+### Market Discovery
+
+At startup and at each 5-minute boundary the collector fetches the current candle's market from the Polymarket Gamma API using the slug `{PM_SLUG_PREFIX}-{candle_start_ts}` to get the market condition ID and YES/NO token IDs. These rotate every candle.
 
 ### Data Sources
 
-At each 5-minute boundary the collector:
-1. Fetches the current candle's market from `https://gamma-api.polymarket.com/markets/slug/{PM_SLUG_PREFIX}-{candle_ts}` to get the market condition ID and YES/NO token IDs (these rotate every candle).
-2. Opens a new WebSocket connection subscribed to those token IDs.
-
-| Topic | Data | Notes |
+| Source | Data | Notes |
 |---|---|---|
-| `market` (CLOB feed) | yes price, no price | Top-of-book `best_ask` per update; `last_trade_price` as fallback |
-| `crypto_prices_chainlink` | BTC/USD | Same oracle Polymarket uses for resolution |
+| CLOB WebSocket `market` feed | yes price, no price | `best_ask` per update; `last_trade_price` as fallback |
+| CLOB WebSocket `crypto_prices_chainlink` | BTC/USD | Same oracle Polymarket uses for resolution |
 
-### Storage
+### Writes
 
-**DuckDB (`raw_data.db`)** — append-only tick table:
-
-```sql
-CREATE TABLE ticks (
-    datetime        TIMESTAMP NOT NULL,
-    market_id       VARCHAR   NOT NULL,
-    yes_price       FLOAT,
-    no_price        FLOAT,
-    btc_usd         FLOAT
-);
-```
-
-**Parquet export** — at each 5-minute candle boundary, the current batch is written to:
-- Local: `/data/raw/ticks_{market_id}_{timestamp}.parquet`
-- AWS: `s3://{bucket}/raw/ticks_{market_id}_{timestamp}.parquet`
-
-### Behavior
-
-- At startup and at each 5-minute boundary: fetches current market info (condition ID + token IDs) from the Gamma API, then opens a fresh WebSocket connection for the new candle
-- Reconnects automatically within a candle on WebSocket drop (exponential backoff)
-- Writes one tick row to DuckDB every second, carrying forward the last known prices
-- Exports a parquet batch and rotates at the candle boundary (before reconnecting)
-- Logs connection state, row counts, and export results
+- **`raw_data.db`** — one DuckDB row per second (tick table)
+- **`/data/raw/ticks_{market_id}_{timestamp}.parquet`** — one file per completed candle, written at the boundary
+- **`/data/latest_tick.json`** — atomically overwritten every second with the current tick (`datetime`, `market_id`, `yes_price`, `no_price`, `btc_usd`)
 
 ---
 
 ## Container 2: Model
 
-**Responsibility:** Serve a FastAPI app that trains the classification model on a schedule, generates predictions on demand, and persists all outputs.
+**Responsibility:** Three concurrent asyncio tasks — a file watcher that retrains on each new candle, an inference loop that runs every second, and a FastAPI server.
 
-### API Endpoints
+### Task 1: Watcher (`watcher.py`)
 
-```
-POST /train
-  Body (optional): { "algorithm": "logistic_regression" }   ← default
-                   { "algorithm": "lightgbm" }
-  Reads raw parquet from storage
-  Runs feature engineering pipeline
-  Trains the specified algorithm
-  Evaluates on holdout set
-  Saves versioned model artifact under models/{algorithm}_{timestamp}/
-  Updates registry.json to point latest for that algorithm
-  Returns: { model_id, algorithm, metrics: { auc, accuracy, brier_score, calibration } }
+Triggered by each new parquet file in `/data/raw/`:
 
-POST /predict
-  Body: { market_id, yes_price, no_price, btc_usd, candle_open, time_remaining,
-          "algorithm": "logistic_regression" }   ← optional, defaults to logistic_regression
-  Loads latest model for the requested algorithm (each cached separately)
-  Returns predicted probability + edge vs market price
-  Writes to predictions.db
-  Returns: { predicted_prob, market_prob, edge, model_id, algorithm, timestamp }
+1. Reads the completed candle's BTC price to determine market resolution (`btc_close > btc_open`)
+2. Calls `trades.resolve_market()` to fill in P&L for all open trades on that market
+3. Retrains the model on all historical parquet files
+4. Extracts the start-of-new-candle snapshot and calls `predictor.predict()` to log the opening prediction
 
-GET /models
-  Returns: list of all registered algorithms with their latest model_id, trained_at, metrics
+### Task 2: Inference Loop (`inference.py`)
 
-GET /status
-  Returns: { models: { algorithm: { model_id, trained_at, metrics } }, predictions_count, uptime }
-```
+Every second:
 
-### Feature Engineering Pipeline
+1. Reads `/data/latest_tick.json`
+2. Computes `pct_change_open` from the BTC price at candle open vs now
+3. Computes `time_remaining` from the wall clock
+4. Calls `predictor.infer()` which:
+   - Runs the model
+   - Logs green `EDGE` if `edge >= MIN_EDGE_THRESHOLD` and `predicted_prob >= MIN_PREDICTED_PROB`
+   - Opens a $1 trade in `trades.parquet` if both conditions are met
 
-Input: raw ticks resampled to 5-minute intervals
+### Task 3: FastAPI (`api.py`)
+
+HTTP API on port 8000. Mainly for manual inspection and triggering; the watcher and inference loop run autonomously.
+
+---
+
+## Feature Engineering
+
+Features are configurable via `FEATURE_NAMES` in `.env` (JSON array). The model rejects a loaded model whose stored `feature_names` differ from the current config and retrains automatically.
+
+**Current default:**
 
 | Feature | Description |
 |---|---|
-| `pct_change_open` | (btc_close - btc_open) / btc_open for the 5-min candle |
-| `time_remaining` | seconds until 5-min interval closes |
-| `yes_price` | current implied probability (best_ask of YES token) |
-| `no_price` | current implied probability (best_ask of NO token) |
-| `spread` | yes_price + no_price − 1 (liquidity/fee proxy) |
+| `pct_change_open` | BTC % change from candle open to now (0.0 when no BTC data) |
+| `time_remaining` | Seconds left in the 5-minute candle |
+| `spread` | `yes_price + no_price − 1` (fee/liquidity proxy) |
 
-Label: `resolved_yes` (boolean) — backfilled by resolution poller.
+**Label:** `resolved_yes = 1` if `btc_close > btc_open`; fallback: `final_yes_price >= 0.5` when BTC data is absent.
 
-### Model
+All rows from every parquet file are used for training (one row per second per candle).
 
-Multiple algorithms are trained and served in parallel. Each has its own versioned artifacts and its own latest pointer in the registry.
+---
 
-| Algorithm | Key | Notes |
-|---|---|---|
-| Logistic Regression | `logistic_regression` | **Default.** Fast, interpretable, well-calibrated baseline |
-| LightGBM | `lightgbm` | Higher capacity; compare against LR to check if complexity pays off |
+## Trade System
 
-- **Evaluation:** AUC-ROC, Brier score, calibration curve by confidence bucket (same for all algorithms)
-- **Split:** time-based (no data leakage)
-- **Serialization:** `model.joblib` + `metadata.json` per algorithm version
+Each second where the model detects edge, a $1 trade is opened and stored in `/data/trades/trades.parquet`. Trades are held until the market's candle completes; the watcher then fills in `resolved_yes`, `resolved_at`, and `pnl`.
 
-### Model Versioning
+**Trade gating (all three must be true):**
+- `edge >= MIN_EDGE_THRESHOLD` (default 0.02)
+- `predicted_prob >= MIN_PREDICTED_PROB` (default 0.70)
+- `predicted_prob > market_prob / (1 - PM_FEE)` (breakeven after fees)
 
-Each algorithm has its own versioned directory. A single `registry.json` tracks the latest version per algorithm.
+**P&L calculation:**
+```
+win  →  stake * (1 / yes_price) * (1 - PM_FEE) - stake
+loss →  -stake
+```
+
+---
+
+## Model Versioning
+
+Each training run produces a versioned directory. `registry.json` points to the latest version per algorithm. On load, the registry checks that stored `feature_names` match the current config; a mismatch causes a retrain.
 
 ```
 /data/models/
-  logistic_regression_20260518_090000/
+  logistic_regression_20260519_120000/
     model.joblib
-    metadata.json        # trained_at, algorithm, metrics, feature_names, data_range
-  logistic_regression_20260517_143022/
-    model.joblib
-    metadata.json
-  lightgbm_20260518_090000/
-    model.joblib
-    metadata.json
-  registry.json          # { "logistic_regression": "logistic_regression_20260518_090000",
-                         #   "lightgbm": "lightgbm_20260518_090000" }
+    metadata.json      ← algorithm, feature_names, training_rows, metrics
+  registry.json        ← { "logistic_regression": "logistic_regression_20260519_120000" }
 ```
-
-On S3: `registry.json` is an object key that maps algorithm names to their active model prefix. The model container reads it on startup and updates the relevant entry after each training run.
-
-### Predictions DuckDB
-
-```sql
-CREATE TABLE predictions (
-    id              VARCHAR PRIMARY KEY,
-    predicted_at    TIMESTAMP,
-    market_id       VARCHAR,
-    yes_price       FLOAT,
-    no_price        FLOAT,
-    btc_usd         FLOAT,
-    pct_change_open FLOAT,
-    time_remaining  INTEGER,
-    predicted_prob  FLOAT,
-    market_prob     FLOAT,
-    edge            FLOAT,          -- predicted_prob - market_prob
-    model_id        VARCHAR,
-    algorithm       VARCHAR,        -- e.g. "logistic_regression", "lightgbm"
-    resolved_yes    BOOLEAN,        -- NULL until resolved
-    resolved_at     TIMESTAMP
-);
-```
-
-`resolved_yes` is backfilled by a background poller that checks Polymarket's REST API for resolved markets.
 
 ---
 
 ## Storage Layout
 
 ```
-/data/                          (bind-mounted to ./data locally, S3 on AWS)
+/data/
+  raw_data.db                         ← DuckDB (collector ticks)
+  predictions.db                      ← DuckDB (post-candle predictions)
+  latest_tick.json                    ← latest tick, overwritten every second
   raw/
-    ticks_{market_id}_{ts}.parquet
+    ticks_{market_id}_{ts}.parquet    ← one file per completed candle
   models/
     {algorithm}_{timestamp}/
       model.joblib
       metadata.json
-    registry.json               # maps algorithm → latest model directory
-  predictions/
-    predictions_{date}.parquet
+    registry.json
+  trades/
+    trades.parquet                    ← full trade ledger
 ```
-
-### Environment Switch
-
-A single `ENV` variable controls all storage paths:
-
-```
-ENV=local  →  reads/writes to /data/ (bind-mounted to ./data on the host)
-ENV=aws    →  reads/writes to s3://{BUCKET}/
-```
-
-No code changes between environments.
-
----
-
-## Data Analysis Layer
-
-Analysis is done outside the containers, in `notebooks/` and `analysis/`:
-
-- Load predictions parquet locally or from S3
-- Join with resolutions to compute ground truth
-- Calibration curves: is a 0.8 model prediction right 80% of the time?
-- Edge analysis by confidence bucket, time remaining, market type
-- P&L simulation with configurable stake and fee model
-
----
-
-## Future Extensions
-
-The architecture is designed to accommodate these additions without structural changes:
-
-### Live Trading (next logical step)
-- Add `POST /execute` endpoint to model container
-- Polymarket CLOB API for order placement
-- Position tracking table in predictions.db
-- Risk management config: max stake, max open positions, min edge threshold
-
-### Multi-Market Support
-- Collector subscribes to multiple market_ids
-- Model trains per-market or with market_id as a feature
-- Prediction runner loops over active markets
-
-### Model Improvements
-- Online learning / incremental retraining
-- Feature store for pre-computed features
-- Ensemble: combine logistic regression and LightGBM predictions into a meta-model
-- Regime detection (high/low volatility BTC regimes)
-- Additional algorithms: XGBoost, calibrated neural net
-
-### Monitoring
-- Prometheus metrics endpoint on model container
-- Grafana dashboard for prediction volume, edge distribution, P&L
-- Alerting on model drift (calibration degradation)
-
-### SageMaker (if scaling)
-- Replace local model store with SageMaker Model Registry
-- Use SageMaker Batch Transform for scheduled predictions
-- Training jobs on managed infrastructure
 
 ---
 
@@ -274,12 +167,11 @@ The architecture is designed to accommodate these additions without structural c
 
 | Component | Choice | Rationale |
 |---|---|---|
-| Language | Python 3.12 | Ecosystem for ML, async WebSocket |
+| Language | Python 3.12 | ML ecosystem, async WebSocket |
 | Package manager | uv | Fast, lockfile, reproducible |
-| Data store | DuckDB | Analytical SQL, zero ops, parquet-native |
-| Cloud storage | S3 | Simple, cheap, parquet-compatible |
-| ML framework | scikit-learn (LR default) + LightGBM | Multiple algorithms served in parallel; LR is fast and well-calibrated by default |
-| API framework | FastAPI | Async, typed, auto-docs |
-| Containerization | Docker + Compose | Local parity with EC2 |
-| Scheduling | asyncio + boundary-aligned candle loop | Collector reconnects and exports at each 5-min boundary; no external scheduler |
-| WebSocket | websockets (asyncio) | Lightweight, reliable |
+| Data store | DuckDB | Zero-ops analytical SQL, parquet-native |
+| ML framework | scikit-learn (LR) + LightGBM | LR is fast and interpretable; LightGBM available for comparison |
+| API | FastAPI | Async, typed, auto-docs |
+| Containers | Docker + Compose | Reproducible local environment |
+| Inter-container IPC | Shared bind-mount (`/data/`) | No network calls between containers |
+| File watching | watchfiles `awatch` | Efficient async file system events |

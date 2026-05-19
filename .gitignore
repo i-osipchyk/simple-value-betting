@@ -218,3 +218,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 .DS_Store
+
+# Runtime data — bind-mounted volume, not source code
+data/

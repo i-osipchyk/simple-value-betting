@@ -1,46 +1,37 @@
-# polymarket-ml
+# simple-value-betting
 
-Real-time ML pipeline for predicting Polymarket binary market resolution using Chainlink BTC/USD price feed data. Collects live tick data, trains a classification model, generates predictions with edge signals, and stores everything for analysis and eventual live trading.
+Real-time ML pipeline for trading Polymarket binary markets. Collects live tick data from BTC up/down 5-minute markets, trains a classification model after each candle, runs inference every second, and opens $1 trades whenever the model detects edge against the market price.
 
 ---
 
 ## What It Does
 
-1. **Collects** yes/no token prices and BTC/USD oracle price from Polymarket WebSocket every second
-2. **Trains** a LightGBM classifier on 15-minute candle features to predict market resolution probability
-3. **Predicts** at each 15-minute interval close and computes edge vs market-implied probability
-4. **Stores** all raw data and predictions in DuckDB, backed up to S3
-5. **Analyses** calibration and edge distribution to find exploitable signals
+1. **Collects** yes/no token prices and BTC/USD from Polymarket WebSocket every second
+2. **Exports** a parquet batch at each 5-minute candle boundary
+3. **Trains** a logistic regression classifier on all historical candles when each new batch arrives
+4. **Infers** every second from live tick data, opens a $1 trade whenever edge is detected
+5. **Resolves** trades at each candle boundary and logs per-market and overall P&L
 
 ---
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- Python 3.12+
-- AWS CLI (for deployment only)
 
 ---
 
-## Quick Start (Local)
+## Quick Start
 
 ```bash
-git clone https://github.com/you/polymarket-ml
-cd polymarket-ml
-
 # Copy and fill in config
 cp .env.example .env
 
 # Start both containers
 docker compose up --build
 
-# Model API is available at http://localhost:8000
-# Trigger manual training
-curl -X POST http://localhost:8000/train
-
-# Check status
+# Model API
 curl http://localhost:8000/status
+curl -X POST http://localhost:8000/train
 ```
 
 ---
@@ -48,147 +39,96 @@ curl http://localhost:8000/status
 ## Repository Structure
 
 ```
-polymarket-ml/
-├── collector/                  # Data collection container
+simple-value-betting/
+├── collector/
 │   ├── src/
-│   │   ├── websocket_client.py # Polymarket WS connection
-│   │   ├── storage.py          # DuckDB writes + parquet export
-│   │   ├── s3_sync.py          # S3 upload abstraction
+│   │   ├── main.py               # Entry point: tick loop + candle rotation
+│   │   ├── websocket_client.py   # Polymarket CLOB WebSocket connection
+│   │   ├── market.py             # Gamma API market discovery
+│   │   ├── storage.py            # DuckDB writes, parquet export, latest_tick.json
+│   │   ├── s3_sync.py            # S3 upload abstraction
 │   │   └── config.py
 │   ├── Dockerfile
 │   └── pyproject.toml
 │
-├── model/                      # Model container (FastAPI)
+├── model/
 │   ├── src/
-│   │   ├── api/
-│   │   │   ├── main.py         # FastAPI app
-│   │   │   ├── routes/
-│   │   │   │   ├── train.py
-│   │   │   │   ├── predict.py
-│   │   │   │   └── status.py
-│   │   ├── pipeline/
-│   │   │   ├── features.py     # Feature engineering
-│   │   │   └── labels.py       # Resolution backfill poller
-│   │   ├── training/
-│   │   │   ├── train.py
-│   │   │   └── evaluate.py
-│   │   ├── inference/
-│   │   │   └── predictor.py    # Model loading + caching
-│   │   └── storage/
-│   │       └── model_store.py  # local/S3 abstraction
+│   │   ├── main.py               # Entry point: three asyncio tasks
+│   │   ├── watcher.py            # Watches /data/raw/, trains on new parquet
+│   │   ├── inference.py          # Per-second inference loop
+│   │   ├── predictor.py          # Model inference + trade gating
+│   │   ├── trainer.py            # Logistic regression + LightGBM training
+│   │   ├── features.py           # Feature extraction from parquet files
+│   │   ├── registry.py           # Model versioning and loading
+│   │   ├── trades.py             # Trade ledger (parquet)
+│   │   ├── storage.py            # Predictions DuckDB
+│   │   ├── api.py                # FastAPI app
+│   │   └── config.py
 │   ├── Dockerfile
 │   └── pyproject.toml
 │
-├── analysis/                   # Standalone analysis scripts
-│   ├── calibration.py          # Calibration curves by bucket
-│   ├── edge.py                 # Edge analysis + P&L simulation
-│   └── load_data.py            # Helper to load from local or S3
+├── data/                         # Bind-mounted volume (not committed)
+│   ├── raw/                      # Parquet files from collector
+│   ├── models/                   # Trained model artifacts
+│   ├── trades/                   # trades.parquet
+│   ├── latest_tick.json          # Written every second by collector
+│   ├── raw_data.db               # DuckDB (collector)
+│   └── predictions.db            # DuckDB (model)
 │
-├── notebooks/                  # Jupyter notebooks for exploration
-│   └── eda.ipynb
-│
-├── deploy/                     # Deployment scripts
-│   ├── aws/
-│   │   ├── setup_ec2.sh        # EC2 bootstrap script
-│   │   ├── setup_s3.sh         # S3 bucket + IAM setup
-│   │   └── deploy.sh           # Build, push, and restart on EC2
-│   └── ci/
-│       └── deploy.yml          # GitHub Actions workflow
-│
-├── docker-compose.yml          # Local development
-├── docker-compose.aws.yml      # AWS overrides
-├── .env.example
-└── README.md
+├── docs/
+├── docker-compose.yml
+└── .env
 ```
 
 ---
 
 ## Configuration
 
-All configuration is via environment variables. Copy `.env.example` to `.env`:
+All configuration is via environment variables in `.env`:
 
 ```env
-# Environment: local | aws
-ENV=local
+# Environment
+ENV=local                     # local | aws
 
 # Polymarket
-PM_WS_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
-PM_MARKET_ID=your-market-id-here
+PM_WS_URL=wss://ws-subscriptions-clob.polymarket.com
+PM_SLUG_PREFIX=btc-updown-5m  # slug prefix for Gamma API market discovery
+CANDLE_INTERVAL_MINUTES=5
 
-# Storage (local)
+# Storage
 LOCAL_DATA_DIR=/data
-
-# Storage (AWS)
-AWS_BUCKET=your-bucket-name
+AWS_BUCKET=polymarket-ml-prod
 AWS_REGION=eu-central-1
 
+# Collector tuning
+EXPORT_INTERVAL_MINUTES=5
+TICK_INTERVAL_SECONDS=1.0
+RECONNECT_BASE_DELAY=1.0
+RECONNECT_MAX_DELAY=60.0
+
 # Model training
-TRAIN_INTERVAL_HOURS=24
 MIN_TRAINING_ROWS=500
 
-# Prediction
-MIN_EDGE_THRESHOLD=0.05
+# Features (JSON array — model retrains automatically when changed)
+FEATURE_NAMES=["pct_change_open","time_remaining","spread"]
+
+# Trade gating
+MIN_EDGE_THRESHOLD=0.02       # minimum predicted_prob - market_prob
+MIN_PREDICTED_PROB=0.7        # minimum model output to open a trade
+
+# Polymarket fee
+PM_FEE=0.02
 ```
 
 ---
 
 ## API Reference
 
-Full docs available at `http://localhost:8000/docs` (Swagger UI).
+Swagger UI: `http://localhost:8000/docs`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/train` | Trigger model training |
-| `POST` | `/predict` | Get prediction for current features |
-| `GET` | `/status` | Model and system status |
-
----
-
-## Analysis
-
-Analysis scripts run locally against exported parquet files:
-
-```bash
-cd analysis
-uv run python calibration.py --data /data/predictions/
-uv run python edge.py --data /data/predictions/ --fee 0.02
-```
-
-Or load from S3:
-
-```bash
-uv run python edge.py --source s3 --bucket your-bucket
-```
-
----
-
-## Deployment
-
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for full AWS deployment instructions.
-
-Quick summary:
-```bash
-# One-time AWS setup
-./deploy/aws/setup_s3.sh
-./deploy/aws/setup_ec2.sh
-
-# Deploy
-./deploy/aws/deploy.sh
-```
-
----
-
-## Development
-
-```bash
-# Install dependencies for a container
-cd collector
-uv sync
-
-# Run tests
-uv run pytest
-
-# Lint
-uv run ruff check .
-uv run mypy src/
-```
+| `POST` | `/train` | Trigger model training manually |
+| `POST` | `/predict` | Get a prediction for given market inputs |
+| `GET` | `/models` | List all registered models with metrics |
+| `GET` | `/status` | System status and prediction count |
