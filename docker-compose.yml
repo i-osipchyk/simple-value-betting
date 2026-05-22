@@ -1,6 +1,6 @@
 services:
   collector:
-    build: ./collector
+    build: ./src/collector
     volumes:
       - ./data:/data
     env_file: .env
@@ -13,7 +13,7 @@ services:
       start_period: 10s
 
   model:
-    build: ./model
+    build: ./src/model
     volumes:
       - ./data:/data
     env_file: .env
@@ -25,7 +25,7 @@ services:
         condition: service_healthy
 
   analysis:
-    build: ./analysis
+    build: ./src/analysis
     volumes:
       - ./data:/data
     env_file: .env
@@ -37,7 +37,7 @@ services:
   model_sl:
     build:
       context: .
-      dockerfile: model_sl/Dockerfile
+      dockerfile: src/model_sl/Dockerfile
     volumes:
       - ./data:/data
     env_file: .env
@@ -49,7 +49,7 @@ services:
   analysis_sl:
     build:
       context: .
-      dockerfile: analysis_sl/Dockerfile
+      dockerfile: src/analysis_sl/Dockerfile
     volumes:
       - ./data:/data
     env_file: .env

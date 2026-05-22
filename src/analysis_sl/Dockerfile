@@ -4,12 +4,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 WORKDIR /app
 
-COPY analysis/pyproject.toml analysis/uv.lock ./
+COPY src/analysis/pyproject.toml src/analysis/uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Base analysis source, then overlay stop-loss specific files on top
-COPY analysis/src/ ./src/
-COPY analysis_sl/src/ ./src/
+COPY src/analysis/src/ ./src/
+COPY src/analysis_sl/src/ ./src/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1
