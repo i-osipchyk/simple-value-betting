@@ -62,6 +62,7 @@ async def _rebuild(raw_dir: Path, latest_file: Path) -> None:
             raw_dir,
             settings.time_bucket_seconds,
             settings.pct_change_bucket_size,
+            settings.candle_interval_minutes * 60,
         )
 
 

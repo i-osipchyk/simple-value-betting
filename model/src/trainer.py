@@ -33,7 +33,7 @@ def _models_dir() -> Path:
 def train(algorithm: str = "logistic_regression") -> dict:
     """Train a model on all available parquet data. Returns metadata dict."""
     raw_dir = Path(settings.local_data_dir) / "raw"
-    df = load_features(raw_dir)
+    df = load_features(raw_dir, settings.candle_interval_minutes * 60)
 
     n = len(df)
     if n < 2:

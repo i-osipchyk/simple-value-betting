@@ -14,30 +14,30 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-FEATURE_NAMES = ["pct_change_open", "time_remaining", "yes_price", "no_price", "spread"]
+_COMPUTABLE_FEATURES = ["pct_change_open", "time_remaining", "yes_price", "no_price", "spread"]
 
 
-def load_features(raw_dir: Path) -> pd.DataFrame:
+def load_features(raw_dir: Path, candle_interval_s: int = 300) -> pd.DataFrame:
     """Load all parquet files and return a training DataFrame."""
     files = sorted(raw_dir.glob("ticks_*.parquet"))
     if not files:
-        return pd.DataFrame(columns=FEATURE_NAMES + ["resolved_yes", "market_id"])
+        return pd.DataFrame(columns=_COMPUTABLE_FEATURES + ["resolved_yes", "market_id"])
 
     rows: list[dict] = []
     for f in files:
         try:
-            rows.extend(_rows_from_file(f))
+            rows.extend(_rows_from_file(f, candle_interval_s))
         except Exception as exc:
             logger.warning("Skipping %s: %s", f.name, exc)
 
     if not rows:
-        return pd.DataFrame(columns=FEATURE_NAMES + ["resolved_yes", "market_id"])
+        return pd.DataFrame(columns=_COMPUTABLE_FEATURES + ["resolved_yes", "market_id"])
 
     df = pd.DataFrame(rows)
-    return df.dropna(subset=FEATURE_NAMES + ["resolved_yes"]).reset_index(drop=True)
+    return df.dropna(subset=_COMPUTABLE_FEATURES + ["resolved_yes"]).reset_index(drop=True)
 
 
-def _rows_from_file(file: Path) -> list[dict]:
+def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
     df = pd.read_parquet(file).sort_values("datetime").reset_index(drop=True)
     if df.empty:
         return []
@@ -59,13 +59,11 @@ def _rows_from_file(file: Path) -> list[dict]:
 
     market_id = str(df["market_id"].iloc[0])
     t_start = pd.Timestamp(df["datetime"].iloc[0])
-    t_end = pd.Timestamp(df["datetime"].iloc[-1])
-    candle_duration_s = max(1.0, (t_end - t_start).total_seconds())
 
     rows = []
     for row in df.itertuples():
         elapsed_s = (pd.Timestamp(row.datetime) - t_start).total_seconds()
-        time_remaining = max(0, int(candle_duration_s - elapsed_s))
+        time_remaining = max(0, int(candle_interval_s - elapsed_s))
 
         if has_btc and btc_open is not None:
             btc_now = btc.iloc[row.Index]
