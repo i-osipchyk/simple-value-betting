@@ -59,7 +59,7 @@ def export_candle(conn, since: datetime) -> datetime:
     return now
 
 
-async def candle_loop(conn, global_stop: asyncio.Event) -> None:
+async def candle_loop(conn, global_stop: asyncio.Event) -> datetime:
     """Outer loop: collect one candle, export, reconnect with fresh token IDs."""
     batch_start = datetime.now(tz=timezone.utc)
 

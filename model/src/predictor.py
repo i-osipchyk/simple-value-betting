@@ -144,7 +144,6 @@ def infer(
 def _log_result(result: dict, market_id: str, edge: float) -> None:
     market_prob = result["market_prob"]
     predicted_prob = result["predicted_prob"]
-    no_edge = (1.0 - predicted_prob) - (1.0 - market_prob - (result.get("spread", 0) or 0))
 
     if edge >= settings.min_edge_threshold:
         msg = (

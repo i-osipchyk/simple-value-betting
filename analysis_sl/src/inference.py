@@ -118,8 +118,6 @@ async def inference_loop() -> None:
 
         empirical_prob, n = result
         yes_edge = empirical_prob - market_prob
-        no_prob = 1.0 - empirical_prob
-        no_edge = no_prob - float(no_price)
         model_id = f"empirical_n{n}"
         if (
             float(yes_price) <= 0.04 or float(yes_price) >= 0.97
