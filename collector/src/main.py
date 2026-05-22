@@ -16,6 +16,7 @@ import logging
 import signal
 from datetime import datetime, timezone
 
+import btc_feed
 import s3_sync
 import storage
 from config import settings
@@ -36,7 +37,8 @@ async def tick_loop(
 ) -> None:
     """Write one row per second into DuckDB using the latest prices from WS state."""
     while not stop.is_set():
-        dt, market_id, yes_price, no_price, btc_usd = client.snapshot()
+        dt, market_id, yes_price, no_price, _ = client.snapshot()
+        btc_usd = btc_feed.get_btc_price()
         storage.insert_tick(conn, dt, market_id, yes_price, no_price, btc_usd)
         storage.write_latest_tick(dt, market_id, yes_price, no_price, btc_usd)
         try:
@@ -117,7 +119,12 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown, sig)
 
-    batch_start = await candle_loop(conn, global_stop)
+    btc_task = asyncio.create_task(btc_feed.btc_price_loop(), name="btc_feed")
+    try:
+        batch_start = await candle_loop(conn, global_stop)
+    finally:
+        btc_task.cancel()
+        await asyncio.gather(btc_task, return_exceptions=True)
 
     # Final flush for any ticks collected since the last candle export
     export_candle(conn, batch_start)
