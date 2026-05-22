@@ -132,3 +132,13 @@ Swagger UI: `http://localhost:8000/docs`
 | `POST` | `/predict` | Get a prediction for given market inputs |
 | `GET` | `/models` | List all registered models with metrics |
 | `GET` | `/status` | System status and prediction count |
+
+---
+
+## Roadmap
+
+- Add L1/L2 regularization to prevent overfitting on market data
+- Feature engineering: remove `spread` from model features (may be used as an execution filter)
+- Training data investigation: analyze bucket splits for probabilities
+- Binomial test on trade win rate vs break-even rate to validate edge significance
+- Test on less liquid markets where mispricing is more likely to persist
