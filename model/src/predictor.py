@@ -109,44 +109,47 @@ def infer(
         "model_id": model_id,
     }
 
-    fee = settings.pm_fee
-    breakeven = market_prob / (1.0 - fee)
+    interval_s = settings.candle_interval_minutes * 60
     if (
-        edge >= settings.min_edge_threshold
-        and predicted_prob >= settings.min_predicted_prob
-        and predicted_prob > breakeven
+        yes_price <= 0.04 or yes_price >= 0.97
+        or time_remaining > interval_s - 15
+        or yes_price < 0.40
+        or time_remaining < 100
+        or edge > 0.15
+        or pct_change_open == 0.0
+        or edge < settings.min_edge_threshold
     ):
-        trades.open_trade(
-            market_id=market_id,
-            yes_price=yes_price,
-            no_price=no_price,
-            btc_usd=btc_usd,
-            pct_change_open=pct_change_open,
-            time_remaining=time_remaining,
-            predicted_prob=predicted_prob,
-            edge=edge,
-            model_id=model_id,
+        logger.info(
+            "SKIP  market=%-20s  t=%3ds  yes=%.3f  edge=%+.4f",
+            market_id[:20], time_remaining, yes_price, edge,
         )
+        return
+
+    trades.open_trade(
+        market_id=market_id,
+        yes_price=yes_price,
+        no_price=no_price,
+        btc_usd=btc_usd,
+        pct_change_open=pct_change_open,
+        time_remaining=time_remaining,
+        side="YES",
+        predicted_prob=predicted_prob,
+        edge=edge,
+        model_id=model_id,
+    )
 
     _log_result(result, market_id, edge)
 
 
 def _log_result(result: dict, market_id: str, edge: float) -> None:
-    fee = settings.pm_fee
     market_prob = result["market_prob"]
     predicted_prob = result["predicted_prob"]
-    # Minimum predicted_prob to be profitable after Polymarket fee
-    breakeven = market_prob / (1.0 - fee)
+    no_edge = (1.0 - predicted_prob) - (1.0 - market_prob - (result.get("spread", 0) or 0))
 
-    if (
-        edge >= settings.min_edge_threshold
-        and predicted_prob >= settings.min_predicted_prob
-        and predicted_prob > breakeven
-    ):
+    if edge >= settings.min_edge_threshold:
         msg = (
-            f"EDGE  market={market_id[:20]:<20}  "
-            f"pred={predicted_prob:.3f}  mkt={market_prob:.3f}  "
-            f"edge={edge:+.4f}  model={result['model_id']}"
+            f"EDGE YES  market={market_id[:20]:<20}  "
+            f"pred={predicted_prob:.3f}  mkt={market_prob:.3f}  edge={edge:+.4f}  model={result['model_id']}"
         )
         logger.info("%s%s%s%s", _GREEN, _BOLD, msg, _RESET)
     else:

@@ -15,7 +15,7 @@ import uvicorn
 
 from api import app
 from inference import inference_loop
-from watcher import watch_and_train
+from watcher import watch_and_resolve
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,7 +38,7 @@ async def main() -> None:
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
     server = uvicorn.Server(config)
 
-    watcher_task = asyncio.create_task(watch_and_train(), name="watcher")
+    watcher_task = asyncio.create_task(watch_and_resolve(), name="watcher")
     infer_task = asyncio.create_task(inference_loop(), name="inference")
     server_task = asyncio.create_task(server.serve(), name="uvicorn")
 

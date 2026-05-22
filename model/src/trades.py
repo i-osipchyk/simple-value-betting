@@ -4,9 +4,8 @@ Trade ledger stored as /data/trades/trades.parquet.
 One row per $1 position opened when the inference loop detects an edge.
 resolved_yes and pnl are null until the market closes; the watcher fills them in.
 
-P&L for a YES bet at price p:
-  win  → stake * (1/p) * (1 - fee) - stake
-  loss → -stake
+P&L for a YES bet at price p:  win → stake*(1/yes_price)*(1-fee)-stake  loss → -stake
+P&L for a NO  bet at price p:  win → stake*(1/no_price)*(1-fee)-stake   loss → -stake
 """
 
 import logging
@@ -38,6 +37,7 @@ _SCHEMA = pa.schema(
         pa.field("time_remaining", pa.int32()),
         pa.field("spread", pa.float64()),
         # model outputs
+        pa.field("side", pa.string()),  # "YES" or "NO"
         pa.field("predicted_prob", pa.float64()),
         pa.field("edge", pa.float64()),
         pa.field("model_id", pa.string()),
@@ -53,7 +53,7 @@ _SCHEMA = pa.schema(
 def _path() -> Path:
     p = Path(settings.local_data_dir) / "trades"
     p.mkdir(parents=True, exist_ok=True)
-    return p / "trades.parquet"
+    return p / "model_trades.parquet"
 
 
 def _read() -> list[dict]:
@@ -81,6 +81,7 @@ def open_trade(
     btc_usd: float,
     pct_change_open: float,
     time_remaining: int,
+    side: str,
     predicted_prob: float,
     edge: float,
     model_id: str,
@@ -95,6 +96,7 @@ def open_trade(
         "pct_change_open": pct_change_open,
         "time_remaining": time_remaining,
         "spread": yes_price + no_price - 1.0,
+        "side": side,
         "predicted_prob": predicted_prob,
         "edge": edge,
         "model_id": model_id,
@@ -125,8 +127,11 @@ def resolve_market(market_id: str, resolved_yes: bool) -> None:
                 continue
             r["resolved_yes"] = resolved_yes
             r["resolved_at"] = now
-            if resolved_yes:
-                r["pnl"] = r["stake"] * (1.0 / r["yes_price"]) * (1.0 - fee) - r["stake"]
+            side = r.get("side", "YES")
+            won = (side == "YES" and resolved_yes) or (side == "NO" and not resolved_yes)
+            if won:
+                price = r["yes_price"] if side == "YES" else r["no_price"]
+                r["pnl"] = r["stake"] * (1.0 / price) * (1.0 - fee) - r["stake"]
             else:
                 r["pnl"] = -r["stake"]
 

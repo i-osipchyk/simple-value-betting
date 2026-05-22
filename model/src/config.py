@@ -12,8 +12,7 @@ class Settings(BaseSettings):
 
     candle_interval_minutes: int = Field(5, alias="CANDLE_INTERVAL_MINUTES")
     min_training_rows: int = Field(500, alias="MIN_TRAINING_ROWS")
-    min_edge_threshold: float = Field(0.02, alias="MIN_EDGE_THRESHOLD")
-    min_predicted_prob: float = Field(0.7, alias="MIN_PREDICTED_PROB")
+    min_edge_threshold: float = Field(0.01, alias="MIN_EDGE_THRESHOLD")
     pm_fee: float = Field(0.02, alias="PM_FEE")
     feature_names: list[str] = Field(
         default=["pct_change_open", "time_remaining", "spread"],
