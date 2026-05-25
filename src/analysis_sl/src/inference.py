@@ -15,7 +15,7 @@ from pathlib import Path
 import trades
 import watcher as watcher_module
 from config import settings
-from lookup import lookup, lookup_raw
+from lookup import lookup
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,9 @@ async def inference_loop() -> None:
             btc_candle_open = btc_usd
 
         if btc_usd is not None and btc_candle_open is not None and btc_candle_open != 0:
-            pct_change_open = (btc_usd - btc_candle_open) / btc_candle_open
+            pct_change_binance = (btc_usd - btc_candle_open) / btc_candle_open
         else:
-            pct_change_open = 0.0
+            pct_change_binance = 0.0
 
         seconds_into_candle = int(now.timestamp()) % interval_s
         time_remaining = interval_s - seconds_into_candle
@@ -90,7 +90,7 @@ async def inference_loop() -> None:
         result = lookup(
             table,
             time_remaining,
-            pct_change_open,
+            pct_change_binance,
             settings.time_bucket_seconds,
             settings.pct_change_bucket_size,
             settings.min_bucket_count,
@@ -99,21 +99,6 @@ async def inference_loop() -> None:
         market_prob = float(yes_price)
 
         if result is None:
-            raw = lookup_raw(
-                table, time_remaining, pct_change_open,
-                settings.time_bucket_seconds, settings.pct_change_bucket_size,
-            )
-            n_raw = raw[0] if raw is not None else 0
-            logger.info(
-                "market=%-20s  t=%3ds  pct=%+.5f  cells=%d/%d  no_match (n=%d, need %d)",
-                market_id[:20],
-                time_remaining,
-                pct_change_open,
-                qualified_cells,
-                total_cells,
-                n_raw,
-                settings.min_bucket_count,
-            )
             continue
 
         empirical_prob, n = result
@@ -125,18 +110,14 @@ async def inference_loop() -> None:
             or float(yes_price) < 0.40
             or time_remaining < 100
             or yes_edge > 0.15
-            or pct_change_open == 0.0
+            or pct_change_binance == 0.0
             or yes_edge < settings.min_edge_threshold
         ):
-            logger.info(
-                "SKIP  market=%-20s  t=%3ds  yes=%.3f  yes_edge=%+.4f",
-                market_id[:20], time_remaining, float(yes_price), yes_edge,
-            )
             continue
 
         msg = (
             f"EDGE YES  market={market_id[:20]:<20}  "
-            f"t={time_remaining:3d}s  pct={pct_change_open:+.5f}  "
+            f"t={time_remaining:3d}s  pct={pct_change_binance:+.5f}  "
             f"cells={qualified_cells}/{total_cells}  "
             f"YES={empirical_prob:.3f}  n={n}  mkt={market_prob:.3f}  edge={yes_edge:+.4f}"
         )
@@ -147,7 +128,7 @@ async def inference_loop() -> None:
             yes_price=float(yes_price),
             no_price=float(no_price),
             btc_usd=float(btc_usd) if btc_usd is not None else 0.0,
-            pct_change_open=pct_change_open,
+            pct_change_binance=pct_change_binance,
             time_remaining=time_remaining,
             side="YES",
             predicted_prob=empirical_prob,

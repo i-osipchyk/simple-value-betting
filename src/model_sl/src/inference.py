@@ -64,9 +64,9 @@ async def inference_loop() -> None:
             btc_candle_open = btc_usd
 
         if btc_usd is not None and btc_candle_open is not None and btc_candle_open != 0:
-            pct_change_open = (btc_usd - btc_candle_open) / btc_candle_open
+            pct_change_binance = (btc_usd - btc_candle_open) / btc_candle_open
         else:
-            pct_change_open = 0.0
+            pct_change_binance = 0.0
 
         seconds_into_candle = int(now.timestamp()) % interval_s
         time_remaining = interval_s - seconds_into_candle
@@ -90,6 +90,6 @@ async def inference_loop() -> None:
             float(yes_price),
             float(no_price),
             float(btc_usd) if btc_usd is not None else 0.0,
-            pct_change_open,
+            pct_change_binance,
             time_remaining,
         )

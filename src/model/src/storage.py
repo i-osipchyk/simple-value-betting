@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     yes_price       FLOAT,
     no_price        FLOAT,
     btc_usd         FLOAT,
-    pct_change_open FLOAT,
+    pct_change_binance FLOAT,
     time_remaining  INTEGER,
     predicted_prob  FLOAT,
     market_prob     FLOAT,
@@ -56,7 +56,7 @@ def write_prediction(
     yes_price: float,
     no_price: float,
     btc_usd: float,
-    pct_change_open: float,
+    pct_change_binance: float,
     time_remaining: int,
     predicted_prob: float,
     market_prob: float,
@@ -72,13 +72,13 @@ def write_prediction(
             """
             INSERT INTO predictions
               (id, predicted_at, market_id, yes_price, no_price, btc_usd,
-               pct_change_open, time_remaining, predicted_prob, market_prob,
+               pct_change_binance, time_remaining, predicted_prob, market_prob,
                edge, model_id, algorithm, resolved_yes, resolved_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
             """,
             [
                 pred_id, now, market_id, yes_price, no_price, btc_usd,
-                pct_change_open, time_remaining, predicted_prob, market_prob,
+                pct_change_binance, time_remaining, predicted_prob, market_prob,
                 edge, model_id, algorithm,
             ],
         )

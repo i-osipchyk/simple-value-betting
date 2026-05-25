@@ -5,12 +5,12 @@ Prediction logic: call the latest model, compute edge, log in green if edge exce
 import logging
 from datetime import datetime, timezone
 
-import numpy as np
+import pandas as pd
 
 import registry
 import storage
 import trades
-from config import settings
+from config import MODELS, settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,45 +19,68 @@ _BOLD = "\033[1m"
 _RESET = "\033[0m"
 
 
+def _build_feature_vector(
+    model_cfg: dict,
+    yes_price: float,
+    no_price: float,
+    pct_change_binance: float,
+    time_remaining: int,
+    pct_change_coinbase: float,
+    pct_change_kraken: float,
+) -> pd.DataFrame:
+    all_values = {
+        "pct_change_binance": pct_change_binance,
+        "pct_change_coinbase": pct_change_coinbase,
+        "pct_change_kraken": pct_change_kraken,
+        "time_remaining": time_remaining,
+        "yes_price": yes_price,
+        "no_price": no_price,
+        "spread": yes_price + no_price - 1.0,
+    }
+    features = model_cfg["features"]
+    return pd.DataFrame([[all_values[f] for f in features]], columns=features)
+
+
 def predict(
     market_id: str,
     yes_price: float,
     no_price: float,
     btc_usd: float,
-    pct_change_open: float,
+    pct_change_binance: float,
     time_remaining: int,
-    algorithm: str = "logistic_regression",
+    model_id: str = "logistic_regression",
+    pct_change_coinbase: float = 0.0,
+    pct_change_kraken: float = 0.0,
 ) -> dict:
-    model, metadata = registry.load_model(algorithm)
-    if model is None or metadata is None:
-        raise RuntimeError(f"No trained model available for algorithm '{algorithm}'")
+    model_cfg = next((m for m in MODELS if m["id"] == model_id), None)
+    if model_cfg is None:
+        raise RuntimeError(f"No model config found for id '{model_id}'")
 
-    spread = yes_price + no_price - 1.0
-    feature_values = {
-        "pct_change_open": pct_change_open,
-        "time_remaining": time_remaining,
-        "yes_price": yes_price,
-        "no_price": no_price,
-        "spread": spread,
-    }
-    X = np.array([[feature_values[f] for f in settings.feature_names]])
+    model, metadata = registry.load_model(model_id, expected_features=model_cfg["features"])
+    if model is None or metadata is None:
+        raise RuntimeError(f"No trained model available for '{model_id}'")
+
+    X = _build_feature_vector(
+        model_cfg, yes_price, no_price, pct_change_binance, time_remaining,
+        pct_change_coinbase, pct_change_kraken,
+    )
     predicted_prob = float(model.predict_proba(X)[0, 1])
     market_prob = yes_price
     edge = predicted_prob - market_prob
 
-    model_id = metadata.get("model_id", "unknown")
+    version_id = metadata.get("model_id", "unknown")
     pred_id = storage.write_prediction(
         market_id=market_id,
         yes_price=yes_price,
         no_price=no_price,
         btc_usd=btc_usd,
-        pct_change_open=pct_change_open,
+        pct_change_binance=pct_change_binance,
         time_remaining=time_remaining,
         predicted_prob=predicted_prob,
         market_prob=market_prob,
         edge=edge,
-        model_id=model_id,
-        algorithm=algorithm,
+        model_id=version_id,
+        algorithm=model_cfg["algorithm"],
     )
 
     result = {
@@ -65,8 +88,8 @@ def predict(
         "predicted_prob": round(predicted_prob, 4),
         "market_prob": round(market_prob, 4),
         "edge": round(edge, 4),
-        "model_id": model_id,
-        "algorithm": algorithm,
+        "model_id": version_id,
+        "config_id": model_id,
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
     }
 
@@ -79,83 +102,70 @@ def infer(
     yes_price: float,
     no_price: float,
     btc_usd: float,
-    pct_change_open: float,
+    pct_change_binance: float,
     time_remaining: int,
-    algorithm: str = "logistic_regression",
+    pct_change_coinbase: float = 0.0,
+    pct_change_kraken: float = 0.0,
 ) -> None:
-    """Run inference every second — logs in green if edge found, silent otherwise. No DB write."""
-    model, metadata = registry.load_model(algorithm)
-    if model is None or metadata is None:
-        return
-
-    spread = yes_price + no_price - 1.0
-    feature_values = {
-        "pct_change_open": pct_change_open,
-        "time_remaining": time_remaining,
-        "yes_price": yes_price,
-        "no_price": no_price,
-        "spread": spread,
-    }
-    X = np.array([[feature_values[f] for f in settings.feature_names]])
-    predicted_prob = float(model.predict_proba(X)[0, 1])
-    market_prob = yes_price
-    edge = predicted_prob - market_prob
-
-    model_id = metadata.get("model_id", "unknown")
-    result = {
-        "predicted_prob": predicted_prob,
-        "market_prob": market_prob,
-        "edge": edge,
-        "model_id": model_id,
-    }
-
+    """Run inference for all configured models and log one summary line per tick."""
     interval_s = settings.candle_interval_minutes * 60
-    if (
-        yes_price <= 0.04 or yes_price >= 0.97
-        or time_remaining > interval_s - 15
-        or yes_price < 0.40
-        or time_remaining < 100
-        or edge > 0.15
-        or pct_change_open == 0.0
-        or edge < settings.min_edge_threshold
-    ):
-        logger.info(
-            "SKIP  market=%-20s  t=%3ds  yes=%.3f  edge=%+.4f",
-            market_id[:20], time_remaining, yes_price, edge,
+    results: list[tuple[dict, float, float, bool]] = []  # (model_cfg, predicted_prob, edge, tradeable)
+
+    for model_cfg in MODELS:
+        model, metadata = registry.load_model(model_cfg["id"], expected_features=model_cfg["features"])
+        if model is None or metadata is None:
+            continue
+
+        X = _build_feature_vector(
+            model_cfg, yes_price, no_price, pct_change_binance, time_remaining,
+            pct_change_coinbase, pct_change_kraken,
         )
+        predicted_prob = float(model.predict_proba(X)[0, 1])
+        edge = predicted_prob - yes_price
+
+        tradeable = edge > 0
+        results.append((model_cfg, metadata, predicted_prob, edge, tradeable))
+
+    if not results:
         return
 
-    trades.open_trade(
-        market_id=market_id,
-        yes_price=yes_price,
-        no_price=no_price,
-        btc_usd=btc_usd,
-        pct_change_open=pct_change_open,
-        time_remaining=time_remaining,
-        side="YES",
-        predicted_prob=predicted_prob,
-        edge=edge,
-        model_id=model_id,
-    )
+    _log_tick(market_id, yes_price, time_remaining, results)
 
-    _log_result(result, market_id, edge)
-
-
-def _log_result(result: dict, market_id: str, edge: float) -> None:
-    market_prob = result["market_prob"]
-    predicted_prob = result["predicted_prob"]
-
-    if edge >= settings.min_edge_threshold:
+    for model_cfg, metadata, predicted_prob, edge, tradeable in results:
+        if not tradeable:
+            continue
+        version_id = metadata.get("model_id", "unknown")
+        trades.open_trade(
+            config_id=model_cfg["id"],
+            market_id=market_id,
+            yes_price=yes_price,
+            no_price=no_price,
+            btc_usd=btc_usd,
+            pct_change_binance=pct_change_binance,
+            time_remaining=time_remaining,
+            side="YES",
+            predicted_prob=predicted_prob,
+            edge=edge,
+            model_id=version_id,
+        )
         msg = (
-            f"EDGE YES  market={market_id[:20]:<20}  "
-            f"pred={predicted_prob:.3f}  mkt={market_prob:.3f}  edge={edge:+.4f}  model={result['model_id']}"
+            f"EDGE YES  market={market_id[:20]:<20}  model={model_cfg['id']}  "
+            f"pred={predicted_prob:.3f}  mkt={yes_price:.3f}  edge={edge:+.4f}"
         )
         logger.info("%s%s%s%s", _GREEN, _BOLD, msg, _RESET)
-    else:
-        logger.info(
-            "pred  market=%s  pred=%.3f  mkt=%.3f  edge=%+.4f",
-            market_id[:20],
-            predicted_prob,
-            market_prob,
-            edge,
-        )
+
+
+def _log_tick(
+    market_id: str,
+    yes_price: float,
+    time_remaining: int,
+    results: list,
+) -> None:
+    model_parts = "  ".join(
+        f"{cfg['id']}={prob:.3f}({edge:+.3f})"
+        for cfg, _meta, prob, edge, _tradeable in results
+    )
+    logger.info(
+        "tick  market=%-20s  t=%3ds  mkt=%.3f  %s",
+        market_id[:20], time_remaining, yes_price, model_parts,
+    )

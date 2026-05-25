@@ -17,6 +17,8 @@ dependencies = [
     "watchfiles>=0.24.0",
     "pytz>=2024.1",
     "numpy>=1.26.0",
+    "pyyaml>=6.0",
+    "xgboost>=2.0.0",
 ]
 
 [build-system]

@@ -130,6 +130,8 @@ def export_batch(conn: duckdb.DuckDBPyConnection, since: datetime, market_id: st
         },
         schema=_SCHEMA,
     )
-    pq.write_table(table, out_path, compression="snappy")
+    tmp_path = out_path.with_suffix(".parquet.tmp")
+    pq.write_table(table, tmp_path, compression="snappy")
+    tmp_path.rename(out_path)  # atomic on POSIX — watcher only sees complete files
     logger.info("Exported %d rows → %s", len(rows), out_path)
     return out_path

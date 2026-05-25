@@ -39,15 +39,32 @@ async def main() -> None:
     server = uvicorn.Server(config)
 
     watcher_task = asyncio.create_task(watch_and_resolve(), name="watcher")
-    infer_task = asyncio.create_task(inference_loop(), name="inference")
     server_task = asyncio.create_task(server.serve(), name="uvicorn")
+
+    infer_task: asyncio.Task | None = None
+
+    async def _run_inference() -> None:
+        nonlocal infer_task
+        while not global_stop.is_set():
+            infer_task = asyncio.create_task(inference_loop(), name="inference")
+            try:
+                await infer_task
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Inference loop crashed — restarting in 2s")
+                await asyncio.sleep(2)
+
+    supervisor_task = asyncio.create_task(_run_inference(), name="inference_supervisor")
 
     await global_stop.wait()
 
     server.should_exit = True
     watcher_task.cancel()
-    infer_task.cancel()
-    await asyncio.gather(watcher_task, infer_task, server_task, return_exceptions=True)
+    supervisor_task.cancel()
+    if infer_task and not infer_task.done():
+        infer_task.cancel()
+    await asyncio.gather(watcher_task, supervisor_task, server_task, return_exceptions=True)
     logger.info("Model container stopped cleanly")
 
 

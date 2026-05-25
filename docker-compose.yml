@@ -34,6 +34,7 @@ services:
       - ./data:/data
     env_file: .env
     restart: unless-stopped
+    profiles: [extra]
     depends_on:
       collector:
         condition: service_healthy
@@ -46,6 +47,7 @@ services:
       - ./data:/data
     env_file: .env
     restart: unless-stopped
+    profiles: [extra]
     depends_on:
       collector:
         condition: service_healthy
@@ -58,6 +60,7 @@ services:
       - ./data:/data
     env_file: .env
     restart: unless-stopped
+    profiles: [extra]
     depends_on:
       collector:
         condition: service_healthy

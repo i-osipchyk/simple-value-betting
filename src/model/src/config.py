@@ -1,5 +1,12 @@
+from pathlib import Path
+
+import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_models_path = Path(__file__).parent / "models.yaml"
+with _models_path.open() as _f:
+    MODELS: list[dict] = yaml.safe_load(_f)["models"]
 
 
 class Settings(BaseSettings):
@@ -11,13 +18,8 @@ class Settings(BaseSettings):
     aws_region: str = Field("eu-central-1", alias="AWS_REGION")
 
     candle_interval_minutes: int = Field(5, alias="CANDLE_INTERVAL_MINUTES")
-    min_training_rows: int = Field(500, alias="MIN_TRAINING_ROWS")
     min_edge_threshold: float = Field(0.01, alias="MIN_EDGE_THRESHOLD")
     pm_fee: float = Field(0.02, alias="PM_FEE")
-    feature_names: list[str] = Field(
-        default=["pct_change_open", "time_remaining", "spread"],
-        alias="FEATURE_NAMES",
-    )
 
 
 settings = Settings()

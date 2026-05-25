@@ -9,14 +9,14 @@ from pathlib import Path
 from watchfiles import Change, awatch
 
 import trades
-from config import settings
-from features import resolve_outcome
+from config import MODELS, settings
+from features import load_features, resolve_outcome
 from trainer import train
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_ALGORITHMS = ["logistic_regression"]
 _train_lock = asyncio.Lock()
+_candle_counters: dict[str, int] = {m["id"]: 0 for m in MODELS}
 
 
 async def watch_and_resolve() -> None:
@@ -47,9 +47,31 @@ async def watch_and_resolve() -> None:
 
 async def _run_training() -> None:
     async with _train_lock:
-        for algorithm in _DEFAULT_ALGORITHMS:
+        models_due = []
+        for model_cfg in MODELS:
+            mid = model_cfg["id"]
+            _candle_counters[mid] += 1
+            every_n = model_cfg.get("retrain_every_n_candles", 1)
+            if _candle_counters[mid] < every_n:
+                logger.info(
+                    "Model %s: candle %d/%d — skipping retrain",
+                    mid, _candle_counters[mid], every_n,
+                )
+                continue
+            _candle_counters[mid] = 0
+            models_due.append(model_cfg)
+
+        if not models_due:
+            return
+
+        raw_dir = Path(settings.local_data_dir) / "raw"
+        df = await asyncio.to_thread(
+            load_features, raw_dir, settings.candle_interval_minutes * 60
+        )
+
+        for model_cfg in models_due:
             try:
-                metadata = await asyncio.to_thread(train, algorithm)
+                metadata = await asyncio.to_thread(train, model_cfg, df)
                 logger.info(
                     "Model ready: %s  rows=%d  metrics=%s",
                     metadata["model_id"],
@@ -57,6 +79,6 @@ async def _run_training() -> None:
                     metadata["metrics"],
                 )
             except ValueError as exc:
-                logger.warning("Training skipped: %s", exc)
+                logger.warning("Training skipped for %s: %s", model_cfg["id"], exc)
             except Exception:
-                logger.exception("Training error for %s", algorithm)
+                logger.exception("Training error for %s", model_cfg["id"])

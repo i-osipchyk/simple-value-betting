@@ -2,7 +2,7 @@
 Per-second inference loop.
 
 Reads /data/latest_tick.json (written atomically by the collector every second),
-runs the latest model, and logs in green whenever edge is found.
+runs all configured models, and logs in green whenever edge is found.
 Does not write to predictions.db — that's reserved for the post-training snapshot
 and manual /predict calls.
 """
@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import predictor
-import registry
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -24,17 +23,16 @@ async def inference_loop() -> None:
     tick_path = Path(settings.local_data_dir) / "latest_tick.json"
     interval_s = settings.candle_interval_minutes * 60
 
-    btc_candle_open: float | None = None
+    # Track candle-open prices per exchange for pct_change computation
+    btc_open: float | None = None
+    coinbase_open: float | None = None
+    kraken_open: float | None = None
     last_candle_ts: int = 0
 
     while True:
         await asyncio.sleep(1.0)
 
         if not tick_path.exists():
-            continue
-
-        model, metadata = registry.load_model("logistic_regression")
-        if model is None:
             continue
 
         try:
@@ -48,28 +46,40 @@ async def inference_loop() -> None:
             continue
 
         btc_usd: float | None = data.get("btc_usd")
+        btc_coinbase: float | None = data.get("btc_coinbase")
+        btc_kraken: float | None = data.get("btc_kraken")
 
-        # Track BTC price at the start of each new candle for pct_change_open
         now = datetime.now(tz=timezone.utc)
         candle_ts = int(now.timestamp()) - (int(now.timestamp()) % interval_s)
         if candle_ts != last_candle_ts:
             last_candle_ts = candle_ts
-            btc_candle_open = btc_usd
+            btc_open = btc_usd
+            coinbase_open = btc_coinbase
+            kraken_open = btc_kraken
 
-        if btc_usd is not None and btc_candle_open is not None and btc_candle_open != 0:
-            pct_change_open = (btc_usd - btc_candle_open) / btc_candle_open
-        else:
-            pct_change_open = 0.0
+        def _pct(current: float | None, open_price: float | None) -> float:
+            if current is None or open_price is None or open_price == 0:
+                return 0.0
+            return (current - open_price) / open_price
+
+        pct_change_binance = _pct(btc_usd, btc_open)
+        pct_change_coinbase = _pct(btc_coinbase, coinbase_open)
+        pct_change_kraken = _pct(btc_kraken, kraken_open)
 
         seconds_into_candle = int(now.timestamp()) % interval_s
         time_remaining = interval_s - seconds_into_candle
 
-        await asyncio.to_thread(
-            predictor.infer,
-            data["market_id"],
-            float(yes_price),
-            float(no_price),
-            float(btc_usd) if btc_usd is not None else 0.0,
-            pct_change_open,
-            time_remaining,
-        )
+        try:
+            await asyncio.to_thread(
+                predictor.infer,
+                data["market_id"],
+                float(yes_price),
+                float(no_price),
+                float(btc_usd) if btc_usd is not None else 0.0,
+                pct_change_binance,
+                time_remaining,
+                pct_change_coinbase,
+                pct_change_kraken,
+            )
+        except Exception:
+            logger.exception("Inference error — skipping tick")

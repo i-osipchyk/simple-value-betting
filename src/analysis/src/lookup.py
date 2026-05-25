@@ -7,7 +7,7 @@ min_bucket_count samples before its probability estimate is trusted.
 
 Bucketing:
   time_bucket  = (time_remaining // time_bucket_seconds) * time_bucket_seconds
-  pct_index    = round(pct_change_open / pct_change_bucket_size)   [integer]
+  pct_index    = round(pct_change_binance / pct_change_bucket_size)   [integer]
 
 Using an integer pct_index avoids float comparison issues in the lookup dict.
 """
@@ -56,13 +56,13 @@ def build_table(raw_dir: Path, time_bucket_s: int, pct_bucket_size: float, candl
 def lookup(
     table: Table,
     time_remaining: int,
-    pct_change_open: float,
+    pct_change_binance: float,
     time_bucket_s: int,
     pct_bucket_size: float,
     min_count: int,
 ) -> tuple[float, int] | None:
     """Return (prob_yes, n) for the matching bucket, or None if below min_count."""
-    result = lookup_raw(table, time_remaining, pct_change_open, time_bucket_s, pct_bucket_size)
+    result = lookup_raw(table, time_remaining, pct_change_binance, time_bucket_s, pct_bucket_size)
     if result is None or result[0] < min_count:
         return None
     n, prob_yes = result
@@ -72,18 +72,18 @@ def lookup(
 def lookup_raw(
     table: Table,
     time_remaining: int,
-    pct_change_open: float,
+    pct_change_binance: float,
     time_bucket_s: int,
     pct_bucket_size: float,
 ) -> tuple[int, float] | None:
     """Return (n, prob_yes) for the bucket regardless of min_count, or None if unseen."""
     t_key = (time_remaining // time_bucket_s) * time_bucket_s
-    p_index = round(pct_change_open / pct_bucket_size)
+    p_index = round(pct_change_binance / pct_bucket_size)
     return table.get((t_key, p_index))
 
 
 def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[tuple[int, float, int]]:
-    """Yield (time_remaining, pct_change_open, resolved_yes) for each tick row."""
+    """Yield (time_remaining, pct_change_binance, resolved_yes) for each tick row."""
     df = pd.read_parquet(file).sort_values("datetime").reset_index(drop=True)
     if df.empty:
         return []

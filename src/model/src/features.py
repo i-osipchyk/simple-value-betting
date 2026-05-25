@@ -3,7 +3,7 @@ Feature extraction from raw tick parquet files.
 
 Each parquet file is one completed 5-minute candle. Every row is used as a
 training example — each second of the candle is a distinct snapshot with its
-own yes_price, no_price, pct_change_open, and time_remaining. All rows within
+own yes_price, no_price, pct_change_binance, and time_remaining. All rows within
 the same candle share the same label (resolved_yes).
 """
 
@@ -14,14 +14,15 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_COMPUTABLE_FEATURES = ["pct_change_open", "time_remaining", "yes_price", "no_price", "spread"]
+# Columns required to keep a training row; computed features that are always present
+_REQUIRED_FEATURES = ["pct_change_binance", "time_remaining", "yes_price", "no_price", "resolved_yes"]
 
 
 def load_features(raw_dir: Path, candle_interval_s: int = 300) -> pd.DataFrame:
     """Load all parquet files and return a training DataFrame."""
     files = sorted(raw_dir.glob("ticks_*.parquet"))
     if not files:
-        return pd.DataFrame(columns=_COMPUTABLE_FEATURES + ["resolved_yes", "market_id"])
+        return pd.DataFrame()
 
     rows: list[dict] = []
     for f in files:
@@ -31,10 +32,22 @@ def load_features(raw_dir: Path, candle_interval_s: int = 300) -> pd.DataFrame:
             logger.warning("Skipping %s: %s", f.name, exc)
 
     if not rows:
-        return pd.DataFrame(columns=_COMPUTABLE_FEATURES + ["resolved_yes", "market_id"])
+        return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    return df.dropna(subset=_COMPUTABLE_FEATURES + ["resolved_yes"]).reset_index(drop=True)
+    return df.dropna(subset=_REQUIRED_FEATURES).reset_index(drop=True)
+
+
+def _pct_change_series(price_series: pd.Series) -> pd.Series:
+    """Compute per-row percentage change from the first non-null value in the series."""
+    filled = price_series.ffill()
+    first_valid = filled.dropna()
+    if first_valid.empty or float(first_valid.iloc[0]) == 0:
+        return pd.Series([0.0] * len(price_series), index=price_series.index)
+    open_price = float(first_valid.iloc[0])
+    return filled.apply(
+        lambda v: (float(v) - open_price) / open_price if pd.notna(v) else 0.0
+    )
 
 
 def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
@@ -46,7 +59,7 @@ def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
     if len(yes_series) == 0:
         return []
 
-    btc = df["btc_usd"].ffill()  # forward-fill so each row has the last known BTC price
+    btc = df["btc_usd"].ffill()
     has_btc = btc.notna().any()
 
     if has_btc:
@@ -57,6 +70,21 @@ def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
         resolved_yes = 1 if float(yes_series.iloc[-1]) >= 0.5 else 0
         btc_open = None
 
+    pct_binance = _pct_change_series(df["btc_usd"])
+
+    # Coinbase / Kraken: present in new parquets, missing or all-null in old ones.
+    # Use NaN (not 0.0) when unavailable so trainer.dropna correctly excludes these rows.
+    pct_coinbase = (
+        _pct_change_series(df["btc_coinbase"])
+        if "btc_coinbase" in df.columns and df["btc_coinbase"].notna().any()
+        else pd.Series([float("nan")] * len(df), index=df.index)
+    )
+    pct_kraken = (
+        _pct_change_series(df["btc_kraken"])
+        if "btc_kraken" in df.columns and df["btc_kraken"].notna().any()
+        else pd.Series([float("nan")] * len(df), index=df.index)
+    )
+
     market_id = str(df["market_id"].iloc[0])
     t_start = pd.Timestamp(df["datetime"].iloc[0])
 
@@ -65,32 +93,22 @@ def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
         elapsed_s = (pd.Timestamp(row.datetime) - t_start).total_seconds()
         time_remaining = max(0, int(candle_interval_s - elapsed_s))
 
-        if has_btc and btc_open is not None:
-            btc_now = btc.iloc[row.Index]
-            pct_change = (
-                (float(btc_now) - btc_open) / btc_open
-                if pd.notna(btc_now) and btc_open != 0
-                else 0.0
-            )
-        else:
-            pct_change = 0.0
-
         yes_f = float(row.yes_price) if pd.notna(row.yes_price) else None
         no_f = float(row.no_price) if pd.notna(row.no_price) else None
         if yes_f is None or no_f is None:
             continue
 
-        rows.append(
-            {
-                "pct_change_open": pct_change,
-                "time_remaining": time_remaining,
-                "yes_price": yes_f,
-                "no_price": no_f,
-                "spread": yes_f + no_f - 1.0,
-                "resolved_yes": resolved_yes,
-                "market_id": market_id,
-            }
-        )
+        rows.append({
+            "pct_change_binance": float(pct_binance.iloc[row.Index]),
+            "pct_change_coinbase": float(pct_coinbase.iloc[row.Index]),
+            "pct_change_kraken": float(pct_kraken.iloc[row.Index]),
+            "time_remaining": time_remaining,
+            "yes_price": yes_f,
+            "no_price": no_f,
+            "spread": yes_f + no_f - 1.0,
+            "resolved_yes": resolved_yes,
+            "market_id": market_id,
+        })
 
     return rows
 
@@ -135,6 +153,8 @@ def extract_current_snapshot(file: Path, candle_interval_s: int = 300) -> dict |
         "yes_price": yes_f,
         "no_price": no_f,
         "btc_usd": btc_val,
-        "pct_change_open": 0.0,  # new candle just opened
+        "pct_change_binance": 0.0,
+        "pct_change_coinbase": 0.0,
+        "pct_change_kraken": 0.0,
         "time_remaining": candle_interval_s,
     }
