@@ -1,69 +1,52 @@
 """
-Trade ledger for the empirical probability container.
-Stored at /data/analysis_trades/trades.parquet.
-Same schema and P&L logic as the model container trades.
+Trade ledger for the empirical probability container, backed by DuckDB.
+
+Open trades live in /data/analysis_trades.db until the market resolves,
+then exported to /data/trades/analysis/ as timestamped parquet files and
+deleted from the DB so only live positions remain in the database.
 """
 
 import logging
-import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 from config import settings
+from table_store import TableStore
 
 logger = logging.getLogger(__name__)
 
 STAKE = 1.0
-_lock = threading.Lock()
 
-_SCHEMA = pa.schema(
-    [
-        pa.field("trade_id", pa.string()),
-        pa.field("opened_at", pa.timestamp("us", tz="UTC")),
-        pa.field("market_id", pa.string()),
-        pa.field("yes_price", pa.float64()),
-        pa.field("no_price", pa.float64()),
-        pa.field("btc_usd", pa.float64()),
-        pa.field("pct_change_open", pa.float64()),
-        pa.field("time_remaining", pa.int32()),
-        pa.field("spread", pa.float64()),
-        pa.field("side", pa.string()),  # "YES" or "NO"
-        pa.field("predicted_prob", pa.float64()),
-        pa.field("edge", pa.float64()),
-        pa.field("model_id", pa.string()),
-        pa.field("stake", pa.float64()),
-        pa.field("resolved_yes", pa.bool_()),
-        pa.field("resolved_at", pa.timestamp("us", tz="UTC")),
-        pa.field("pnl", pa.float64()),
-    ]
+_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS trades (
+    trade_id        VARCHAR     NOT NULL,
+    opened_at       TIMESTAMPTZ NOT NULL,
+    market_id       VARCHAR     NOT NULL,
+    yes_price       DOUBLE,
+    no_price        DOUBLE,
+    btc_usd         DOUBLE,
+    pct_change_open DOUBLE,
+    time_remaining  INTEGER,
+    spread          DOUBLE,
+    side            VARCHAR,
+    predicted_prob  DOUBLE,
+    edge            DOUBLE,
+    model_id        VARCHAR,
+    stake           DOUBLE,
+    resolved_yes    BOOLEAN,
+    resolved_at     TIMESTAMPTZ,
+    pnl             DOUBLE,
+    exit_reason     VARCHAR
 )
+"""
 
-
-def _path() -> Path:
-    p = Path(settings.local_data_dir) / "trades"
-    p.mkdir(parents=True, exist_ok=True)
-    return p / "analysis_trades.parquet"
-
-
-def _read() -> list[dict]:
-    path = _path()
-    if not path.exists():
-        return []
-    return pq.read_table(path, schema=_SCHEMA).to_pylist()
-
-
-def _write(rows: list[dict]) -> None:
-    if not rows:
-        tbl = pa.table({f.name: pa.array([], type=f.type) for f in _SCHEMA}, schema=_SCHEMA)
-    else:
-        tbl = pa.Table.from_pylist(rows, schema=_SCHEMA)
-    tmp = _path().with_suffix(".parquet.tmp")
-    pq.write_table(tbl, tmp, compression="snappy")
-    tmp.rename(_path())
+_store = TableStore(
+    db_path=str(Path(settings.local_data_dir) / "analysis_trades.db"),
+    table_name="trades",
+    create_sql=_CREATE_SQL,
+    parquet_dir=Path(settings.local_data_dir) / "trades" / "analysis",
+)
 
 
 def open_trade(
@@ -78,7 +61,7 @@ def open_trade(
     edge: float,
     model_id: str,
 ) -> None:
-    row = {
+    _store.insert({
         "trade_id": str(uuid.uuid4()),
         "opened_at": datetime.now(tz=timezone.utc),
         "market_id": market_id,
@@ -96,64 +79,59 @@ def open_trade(
         "resolved_yes": None,
         "resolved_at": None,
         "pnl": None,
-    }
-    with _lock:
-        rows = _read()
-        rows.append(row)
-        _write(rows)
+        "exit_reason": None,
+    })
 
 
 def resolve_market(market_id: str, resolved_yes: bool) -> None:
     fee = settings.pm_fee
     now = datetime.now(tz=timezone.utc)
 
-    with _lock:
-        rows = _read()
-        open_trades = [r for r in rows if r["market_id"] == market_id and r["resolved_yes"] is None]
-        if not open_trades:
-            return
+    if not _store.select("market_id = ? AND exit_reason IS NULL", [market_id]):
+        return
 
-        for r in rows:
-            if r["market_id"] != market_id or r["resolved_yes"] is not None:
-                continue
-            r["resolved_yes"] = resolved_yes
-            r["resolved_at"] = now
-            side = r.get("side", "YES")
-            won = (side == "YES" and resolved_yes) or (side == "NO" and not resolved_yes)
-            if won:
-                price = r["yes_price"] if side == "YES" else r["no_price"]
-                r["pnl"] = r["stake"] * (1.0 / price) * (1.0 - fee) - r["stake"]
-            else:
-                r["pnl"] = -r["stake"]
+    win_side = "YES" if resolved_yes else "NO"
+    win_price_col = "yes_price" if resolved_yes else "no_price"
 
-        _write(rows)
+    _store.execute(
+        f"""UPDATE trades SET resolved_yes=?, resolved_at=?, exit_reason='resolved',
+                pnl = stake * (1.0 / {win_price_col}) * (1.0 - ?) - stake
+            WHERE market_id=? AND side=? AND exit_reason IS NULL""",
+        [resolved_yes, now, fee, market_id, win_side],
+    )
+    _store.execute(
+        """UPDATE trades SET resolved_yes=?, resolved_at=?, exit_reason='resolved',
+               pnl = -stake
+           WHERE market_id=? AND side != ? AND exit_reason IS NULL""",
+        [resolved_yes, now, market_id, win_side],
+    )
 
-    _log_summary(rows, market_id, resolved_yes)
+    exported = _store.export_and_delete("market_id = ?", [market_id])
+    _log_summary(exported, market_id, resolved_yes)
 
 
 def _log_summary(rows: list[dict], market_id: str, resolved_yes: bool) -> None:
-    market_trades = [r for r in rows if r["market_id"] == market_id and r["pnl"] is not None]
-    if market_trades:
-        m_pnl = sum(r["pnl"] for r in market_trades)
-        m_wins = sum(1 for r in market_trades if r["pnl"] > 0)
-        logger.info(
-            "RESOLVED  market=%s  outcome=%s  trades=%d  wins=%d  pnl=%+.2f",
-            market_id[:20],
-            "YES" if resolved_yes else "NO",
-            len(market_trades),
-            m_wins,
-            m_pnl,
-        )
+    if not rows:
+        return
+    pnl = sum(r["pnl"] for r in rows if r["pnl"] is not None)
+    wins = sum(1 for r in rows if r.get("pnl", 0) > 0)
+    logger.info(
+        "RESOLVED  market=%s  outcome=%s  trades=%d  wins=%d  pnl=%+.2f",
+        market_id[:20],
+        "YES" if resolved_yes else "NO",
+        len(rows),
+        wins,
+        pnl,
+    )
 
-    closed = [r for r in rows if r["pnl"] is not None]
-    if closed:
-        total_pnl = sum(r["pnl"] for r in closed)
-        total_wins = sum(1 for r in closed if r["pnl"] > 0)
-        roi = 100.0 * total_pnl / (len(closed) * STAKE)
+    stats = _store.aggregate_exported(
+        "COUNT(*) AS n, "
+        "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins, "
+        "SUM(pnl) AS total_pnl"
+    )
+    if stats and stats["n"]:
+        roi = 100.0 * stats["total_pnl"] / (stats["n"] * STAKE)
         logger.info(
             "OVERALL   trades=%d  wins=%d  pnl=%+.2f  roi=%+.1f%%",
-            len(closed),
-            total_wins,
-            total_pnl,
-            roi,
+            stats["n"], stats["wins"], stats["total_pnl"], roi,
         )

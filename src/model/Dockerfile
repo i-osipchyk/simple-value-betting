@@ -5,10 +5,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 WORKDIR /app
 
 # Dependencies layer — cached unless pyproject.toml or uv.lock change
-COPY pyproject.toml uv.lock ./
+COPY src/model/pyproject.toml src/model/uv.lock ./
 RUN uv sync --frozen --no-dev
 
-COPY src/ ./src/
+COPY src/model/src/ ./src/
+COPY src/shared/ ./src/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

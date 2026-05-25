@@ -10,6 +10,7 @@ RUN uv sync --frozen --no-dev
 # Base analysis source, then overlay stop-loss specific files on top
 COPY src/analysis/src/ ./src/
 COPY src/analysis_sl/src/ ./src/
+COPY src/shared/ ./src/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

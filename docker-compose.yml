@@ -13,7 +13,9 @@ services:
       start_period: 10s
 
   model:
-    build: ./src/model
+    build:
+      context: .
+      dockerfile: src/model/Dockerfile
     volumes:
       - ./data:/data
     env_file: .env
@@ -25,7 +27,9 @@ services:
         condition: service_healthy
 
   analysis:
-    build: ./src/analysis
+    build:
+      context: .
+      dockerfile: src/analysis/Dockerfile
     volumes:
       - ./data:/data
     env_file: .env

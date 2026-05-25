@@ -10,6 +10,7 @@ RUN uv sync --frozen --no-dev
 # Base model source, then overlay stop-loss specific files on top
 COPY src/model/src/ ./src/
 COPY src/model_sl/src/ ./src/
+COPY src/shared/ ./src/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1
