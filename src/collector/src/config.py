@@ -1,5 +1,12 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
+
+import yaml
 from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_markets_path = Path(__file__).parent / "markets.yaml"
+with _markets_path.open() as _f:
+    MARKETS: list[dict] = yaml.safe_load(_f)["markets"]
 
 
 class Settings(BaseSettings):
@@ -12,9 +19,6 @@ class Settings(BaseSettings):
         "wss://ws-subscriptions-clob.polymarket.com",
         alias="PM_WS_URL",
     )
-    # Slug prefix used to discover the current candle's market from the Gamma API.
-    # Full slug = "{pm_slug_prefix}-{candle_unix_ts}", e.g. "btc-updown-5m-1716000000"
-    pm_slug_prefix: str = Field("btc-updown-5m", alias="PM_SLUG_PREFIX")
     # Must match the actual market cadence (5 for 5-minute markets, 15 for 15-minute)
     candle_interval_minutes: int = Field(5, alias="CANDLE_INTERVAL_MINUTES")
 

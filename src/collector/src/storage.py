@@ -19,18 +19,27 @@ _SCHEMA = pa.schema(
         pa.field("yes_price", pa.float32()),
         pa.field("no_price", pa.float32()),
         pa.field("btc_usd", pa.float32()),
+        pa.field("btc_coinbase", pa.float32()),
+        pa.field("btc_kraken", pa.float32()),
     ]
 )
 
 _CREATE_TICKS = """
 CREATE TABLE IF NOT EXISTS ticks (
-    datetime   TIMESTAMPTZ NOT NULL,
-    market_id  VARCHAR     NOT NULL,
-    yes_price  FLOAT,
-    no_price   FLOAT,
-    btc_usd    FLOAT
+    datetime      TIMESTAMPTZ NOT NULL,
+    market_id     VARCHAR     NOT NULL,
+    yes_price     FLOAT,
+    no_price      FLOAT,
+    btc_usd       FLOAT,
+    btc_coinbase  FLOAT,
+    btc_kraken    FLOAT
 )
 """
+
+_MIGRATIONS = [
+    "ALTER TABLE ticks ADD COLUMN IF NOT EXISTS btc_coinbase FLOAT",
+    "ALTER TABLE ticks ADD COLUMN IF NOT EXISTS btc_kraken FLOAT",
+]
 
 
 def _db_path() -> str:
@@ -47,6 +56,8 @@ def init_db() -> duckdb.DuckDBPyConnection:
     os.makedirs(settings.local_data_dir, exist_ok=True)
     conn = duckdb.connect(_db_path())
     conn.execute(_CREATE_TICKS)
+    for sql in _MIGRATIONS:
+        conn.execute(sql)
     logger.info("DuckDB initialised at %s", _db_path())
     return conn
 
@@ -58,10 +69,12 @@ def insert_tick(
     yes_price: float | None,
     no_price: float | None,
     btc_usd: float | None,
+    btc_coinbase: float | None,
+    btc_kraken: float | None,
 ) -> None:
     conn.execute(
-        "INSERT INTO ticks VALUES (?, ?, ?, ?, ?)",
-        [dt, market_id, yes_price, no_price, btc_usd],
+        "INSERT INTO ticks VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [dt, market_id, yes_price, no_price, btc_usd, btc_coinbase, btc_kraken],
     )
 
 
@@ -71,6 +84,8 @@ def write_latest_tick(
     yes_price: float | None,
     no_price: float | None,
     btc_usd: float | None,
+    btc_coinbase: float | None,
+    btc_kraken: float | None,
 ) -> None:
     """Atomically overwrite /data/latest_tick.json so the model container can read it."""
     payload = {
@@ -79,6 +94,8 @@ def write_latest_tick(
         "yes_price": yes_price,
         "no_price": no_price,
         "btc_usd": btc_usd,
+        "btc_coinbase": btc_coinbase,
+        "btc_kraken": btc_kraken,
     }
     dest = Path(settings.local_data_dir) / "latest_tick.json"
     tmp = dest.with_suffix(".json.tmp")
@@ -86,19 +103,18 @@ def write_latest_tick(
     tmp.rename(dest)  # atomic on POSIX
 
 
-def export_batch(conn: duckdb.DuckDBPyConnection, since: datetime) -> Path | None:
+def export_batch(conn: duckdb.DuckDBPyConnection, since: datetime, market_id: str) -> Path | None:
     rows = conn.execute(
-        "SELECT datetime, market_id, yes_price, no_price, btc_usd "
-        "FROM ticks WHERE datetime >= ? ORDER BY datetime",
-        [since],
+        "SELECT datetime, market_id, yes_price, no_price, btc_usd, btc_coinbase, btc_kraken "
+        "FROM ticks WHERE datetime >= ? AND market_id = ? ORDER BY datetime",
+        [since, market_id],
     ).fetchall()
 
     if not rows:
-        logger.info("No rows since %s — skipping parquet export", since)
+        logger.info("No rows since %s for market %s — skipping parquet export", since, market_id)
         return None
 
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-    market_id = rows[0][1]
     filename = f"ticks_{market_id}_{ts}.parquet"
     out_path = _raw_dir() / filename
 
@@ -109,6 +125,8 @@ def export_batch(conn: duckdb.DuckDBPyConnection, since: datetime) -> Path | Non
             "yes_price": [r[2] for r in rows],
             "no_price": [r[3] for r in rows],
             "btc_usd": [r[4] for r in rows],
+            "btc_coinbase": [r[5] for r in rows],
+            "btc_kraken": [r[6] for r in rows],
         },
         schema=_SCHEMA,
     )

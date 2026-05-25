@@ -48,8 +48,8 @@ def seconds_until_reconnect() -> int:
     return int(next_boundary - now) + 1
 
 
-def _fetch_once(ts: int) -> MarketInfo:
-    slug = f"{settings.pm_slug_prefix}-{ts}"
+def _fetch_once(ts: int, slug_prefix: str) -> MarketInfo:
+    slug = f"{slug_prefix}-{ts}"
     url = f"{GAMMA_API}/markets/slug/{slug}"
     resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     resp.raise_for_status()
@@ -87,13 +87,13 @@ def _fetch_once(ts: int) -> MarketInfo:
     )
 
 
-def fetch_market_info(retries: int = 5, retry_delay: float = 3.0) -> MarketInfo:
+def fetch_market_info(slug_prefix: str, retries: int = 5, retry_delay: float = 3.0) -> MarketInfo:
     """Fetch market info for the current candle, retrying on transient errors."""
     ts = curr_candle_ts()
     last_exc: Exception = RuntimeError("no attempts made")
     for attempt in range(1, retries + 1):
         try:
-            info = _fetch_once(ts)
+            info = _fetch_once(ts, slug_prefix)
             logger.info(
                 "Market fetched: id=%s  yes=%s...  no=%s...",
                 info.market_id,

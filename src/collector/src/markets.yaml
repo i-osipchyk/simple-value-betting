@@ -1,0 +1,3 @@
+markets:
+  - name: btc-5m
+    slug_prefix: btc-updown-5m
