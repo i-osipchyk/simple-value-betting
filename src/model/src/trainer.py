@@ -62,7 +62,7 @@ def train(algorithm: str = "logistic_regression") -> dict:
     model.fit(X_train, y_train)
     metrics = _evaluate(model, X_test, y_test)
 
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     model_id = f"{algorithm}_{ts}"
     model_dir = _models_dir() / model_id
     model_dir.mkdir()
