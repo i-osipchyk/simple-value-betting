@@ -1,4 +1,18 @@
 models:
+  - id: logistic_regression_baseline
+    algorithm: logistic_regression
+    features:
+      - pct_change_binance
+      - time_remaining
+      - spread
+    min_training_rows: 1500
+    max_training_rows: 100000
+    retrain_every_n_candles: 1
+    params:
+      max_iter: 1000
+      C: 1.0
+      random_state: 42
+
   - id: logistic_regression
     algorithm: logistic_regression
     features:
@@ -6,7 +20,7 @@ models:
       - pct_change_binance
       - pct_change_coinbase
       - pct_change_kraken
-    min_training_rows: 500
+    min_training_rows: 1500
     max_training_rows: 100000
     retrain_every_n_candles: 1
     params:
@@ -21,7 +35,7 @@ models:
       - pct_change_binance
       - pct_change_coinbase
       - pct_change_kraken
-    min_training_rows: 500
+    min_training_rows: 1500
     max_training_rows: 100000
     retrain_every_n_candles: 1
     params:
@@ -38,7 +52,7 @@ models:
       - pct_change_binance
       - pct_change_coinbase
       - pct_change_kraken
-    min_training_rows: 500
+    min_training_rows: 1500
     max_training_rows: 100000
     retrain_every_n_candles: 1
     params:

@@ -29,7 +29,9 @@ async def watch_and_resolve() -> None:
         new_files = [
             Path(path)
             for change, path in changes
-            if change == Change.added and path.endswith(".parquet") and Path(path).exists()
+            if change in (Change.added, Change.modified)
+            and path.endswith(".parquet")
+            and Path(path).exists()
         ]
         if not new_files:
             continue

@@ -44,14 +44,9 @@ def train(model_cfg: dict, df: pd.DataFrame) -> dict:
 
     df = df[features + ["resolved_yes"]].dropna()
     n = len(df)
-    if n < 2:
-        raise ValueError(f"Not enough training data after dropping NaNs: {n} rows")
-
     if n < min_rows:
-        logger.warning(
-            "Training with only %d rows (min_training_rows=%d) — model will have high variance",
-            n,
-            min_rows,
+        raise ValueError(
+            f"Not enough training data: {n} rows (min_training_rows={min_rows})"
         )
 
     X = df[features]

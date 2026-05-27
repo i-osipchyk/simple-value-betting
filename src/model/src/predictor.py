@@ -123,7 +123,12 @@ def infer(
         predicted_prob = float(model.predict_proba(X)[0, 1])
         edge = predicted_prob - yes_price
 
-        tradeable = edge > 0
+        tradeable = (
+            edge > 0
+            and time_remaining <= interval_s - 15  # skip first 15s
+            and time_remaining >= 15               # skip last 15s
+            and 0.04 < yes_price < 0.97            # skip near-certain markets
+        )
         results.append((model_cfg, metadata, predicted_prob, edge, tradeable))
 
     if not results:

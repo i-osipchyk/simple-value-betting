@@ -66,7 +66,12 @@ def export_candle(conn, since: datetime, market_id: str) -> datetime:
 async def candle_loop(conn, global_stop: asyncio.Event, market: dict) -> None:
     """Outer loop: collect one candle, export, reconnect with fresh token IDs."""
     slug_prefix: str = market["slug_prefix"]
-    batch_start = datetime.now(tz=timezone.utc)
+    # Align to the current candle boundary so a restart mid-candle picks up all
+    # DuckDB rows from the candle start rather than only post-restart rows.
+    _now = datetime.now(tz=timezone.utc)
+    _interval_s = settings.candle_interval_minutes * 60
+    _epoch = int(_now.timestamp())
+    batch_start = datetime.fromtimestamp(_epoch - (_epoch % _interval_s), tz=timezone.utc)
     last_market_id: str | None = None
 
     while not global_stop.is_set():

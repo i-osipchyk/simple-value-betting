@@ -114,7 +114,7 @@ def export_batch(conn: duckdb.DuckDBPyConnection, since: datetime, market_id: st
         logger.info("No rows since %s for market %s — skipping parquet export", since, market_id)
         return None
 
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = since.strftime("%Y%m%d_%H%M%S")
     filename = f"ticks_{market_id}_{ts}.parquet"
     out_path = _raw_dir() / filename
 
