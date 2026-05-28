@@ -42,17 +42,18 @@ async def tick_loop(
     open_btc_binance: float | None,
     open_btc_coinbase: float | None,
     open_btc_kraken: float | None,
+    ema_flags: dict,
 ) -> None:
     """Write one row per second into DuckDB using the latest prices from WS state."""
     while not stop.is_set():
         dt, market_id, yes_price, no_price, _ = client.snapshot()
-        btc_usd = btc_feed.get_btc_price()
+        btc_binance = btc_feed.get_btc_price()
         btc_cb = coinbase_feed.get_coinbase_price()
         btc_kr = kraken_feed.get_kraken_price()
-        storage.insert_tick(conn, dt, market_id, yes_price, no_price, btc_usd, btc_cb, btc_kr)
+        storage.insert_tick(conn, dt, market_id, yes_price, no_price, btc_binance, btc_cb, btc_kr)
         storage.write_latest_tick(
-            dt, market_id, yes_price, no_price, btc_usd, btc_cb, btc_kr,
-            open_btc_binance, open_btc_coinbase, open_btc_kraken,
+            dt, market_id, yes_price, no_price, btc_binance, btc_cb, btc_kr,
+            open_btc_binance, open_btc_coinbase, open_btc_kraken, ema_flags,
         )
         try:
             await asyncio.wait_for(stop.wait(), timeout=settings.tick_interval_seconds)
@@ -80,18 +81,20 @@ async def _fetch_market_info_with_retry(
 
 async def _fetch_open_prices_post_boundary(
     candle_ts: int, max_attempts: int = 5
-) -> tuple[float | None, float | None, float | None]:
-    """Fetch open prices for a candle that has just started. Retries until at least one
-    exchange returns a value (exchanges need a second or two to register the new candle)."""
-    result: tuple[float | None, float | None, float | None] = (None, None, None)
+) -> tuple[float | None, float | None, float | None, dict]:
+    """Fetch open prices + EMA flags for a candle that has just started. Retries until at least
+    one exchange returns a value (exchanges need a second or two to register the new candle)."""
+    from market import _EMA_FLAGS_NONE
+    result: tuple[float | None, float | None, float | None, dict] = (None, None, None, dict(_EMA_FLAGS_NONE))
     for attempt in range(max_attempts):
         if attempt > 0:
             await asyncio.sleep(1)
         result = await asyncio.to_thread(fetch_open_prices, candle_ts)
-        if any(p is not None for p in result):
+        binance, coinbase, kraken, _flags = result
+        if binance is not None:
             return result
-        logger.debug("Open prices not yet available for ts=%d (attempt %d/%d)", candle_ts, attempt + 1, max_attempts)
-    logger.warning("Open prices still N/A after %d attempts for ts=%d", max_attempts, candle_ts)
+        logger.debug("Binance open not yet available for ts=%d (attempt %d/%d)", candle_ts, attempt + 1, max_attempts)
+    logger.warning("Binance open still N/A after %d attempts for ts=%d — using partial result", max_attempts, candle_ts)
     return result
 
 
@@ -120,6 +123,7 @@ async def _finalize_candle(
     candle_start: datetime,
     candle_end: datetime,
     open_btc: tuple[float | None, float | None, float | None],
+    ema_flags: dict,
 ) -> None:
     """Fetch resolution and write parquet for a completed candle. Runs as a background task.
     Exports only once resolution is confirmed; falls back to Binance REST if gamma never resolves."""
@@ -140,7 +144,7 @@ async def _finalize_candle(
 
         path = storage.export_batch(
             conn, candle_start, candle_end, market_id,
-            open_btc, gamma_res, binance_res,
+            open_btc, gamma_res, binance_res, ema_flags,
         )
         if path:
             s3_sync.save(path)
@@ -198,7 +202,8 @@ async def candle_loop(conn, global_stop: asyncio.Event, market: dict) -> None:
                 market_info.market_id,
             )
 
-        open_btc = await open_btc_task
+        open_btc_binance, open_btc_coinbase, open_btc_kraken, ema_flags = await open_btc_task
+        open_btc = (open_btc_binance, open_btc_coinbase, open_btc_kraken)
 
         if global_stop.is_set():
             client.stop()
@@ -208,7 +213,7 @@ async def candle_loop(conn, global_stop: asyncio.Event, market: dict) -> None:
         # Tick loop.
         iter_stop = asyncio.Event()
         tick_task = asyncio.create_task(
-            tick_loop(client, conn, iter_stop, *open_btc),
+            tick_loop(client, conn, iter_stop, open_btc_binance, open_btc_coinbase, open_btc_kraken, ema_flags),
             name=f"tick_{market['name']}",
         )
 
@@ -273,7 +278,7 @@ async def candle_loop(conn, global_stop: asyncio.Event, market: dict) -> None:
         asyncio.create_task(
             _finalize_candle(
                 conn, candle_ts, slug_prefix, market_info.market_id,
-                candle_start, candle_end, open_btc,
+                candle_start, candle_end, open_btc, ema_flags,
             ),
             name=f"finalize_{market['name']}",
         )

@@ -43,7 +43,7 @@ class MarketState:
 
     yes_price: float | None = None
     no_price: float | None = None
-    btc_usd: float | None = None
+    btc_binance: float | None = None
     events_received: int = field(default=0, repr=False)
 
 
@@ -159,14 +159,14 @@ class PolymarketWSClient:
             if "BTC" in asset_id.upper():
                 btc = _parse_price(event.get("price"))
                 if btc is not None:
-                    self.state.btc_usd = btc
+                    self.state.btc_binance = btc
 
     def snapshot(self) -> tuple[datetime, str, float | None, float | None, float | None]:
-        """Return (utc_now, market_id, yes_price, no_price, btc_usd)."""
+        """Return (utc_now, market_id, yes_price, no_price, btc_binance)."""
         return (
             datetime.now(tz=timezone.utc),
             self.market_info.market_id,
             self.state.yes_price,
             self.state.no_price,
-            self.state.btc_usd,
+            self.state.btc_binance,
         )

@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS ticks (
     market_id     VARCHAR     NOT NULL,
     yes_price     FLOAT,
     no_price      FLOAT,
-    btc_usd       FLOAT,
+    btc_binance   FLOAT,
     btc_coinbase  FLOAT,
     btc_kraken    FLOAT
 )
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS ticks (
 _MIGRATIONS = [
     "ALTER TABLE ticks ADD COLUMN IF NOT EXISTS btc_coinbase FLOAT",
     "ALTER TABLE ticks ADD COLUMN IF NOT EXISTS btc_kraken FLOAT",
+    "ALTER TABLE ticks RENAME COLUMN btc_usd TO btc_binance",
 ]
 
 # Parquet export schema — one file per completed candle.
@@ -37,7 +38,7 @@ _EXPORT_SCHEMA = pa.schema(
         pa.field("datetime", pa.timestamp("us", tz="UTC")),
         pa.field("yes_price", pa.float32()),
         pa.field("no_price", pa.float32()),
-        pa.field("btc_usd", pa.float32()),
+        pa.field("btc_binance", pa.float32()),
         pa.field("btc_coinbase", pa.float32()),
         pa.field("btc_kraken", pa.float32()),
         pa.field("open_btc_binance", pa.float32()),
@@ -45,6 +46,18 @@ _EXPORT_SCHEMA = pa.schema(
         pa.field("open_btc_kraken", pa.float32()),
         pa.field("resolved_yes_gamma", pa.bool_()),
         pa.field("resolved_yes_binance", pa.bool_()),
+        pa.field("above_ema9", pa.bool_()),
+        pa.field("above_ema20", pa.bool_()),
+        pa.field("above_ema34", pa.bool_()),
+        pa.field("above_all_emas", pa.bool_()),
+        pa.field("below_all_emas", pa.bool_()),
+        pa.field("ema9_value", pa.float32()),
+        pa.field("ema20_value", pa.float32()),
+        pa.field("ema34_value", pa.float32()),
+        pa.field("prev_body_pct", pa.float32()),
+        pa.field("prev_wick_ratio", pa.float32()),
+        pa.field("prev_rel_volume", pa.float32()),
+        pa.field("prev_green", pa.bool_()),
     ]
 )
 
@@ -64,7 +77,10 @@ def init_db() -> duckdb.DuckDBPyConnection:
     conn = duckdb.connect(_db_path())
     conn.execute(_CREATE_TICKS)
     for sql in _MIGRATIONS:
-        conn.execute(sql)
+        try:
+            conn.execute(sql)
+        except Exception as exc:
+            logger.debug("Migration skipped (%s): %s", exc, sql)
     logger.info("DuckDB initialised at %s", _db_path())
     return conn
 
@@ -75,13 +91,13 @@ def insert_tick(
     market_id: str,
     yes_price: float | None,
     no_price: float | None,
-    btc_usd: float | None,
+    btc_binance: float | None,
     btc_coinbase: float | None,
     btc_kraken: float | None,
 ) -> None:
     conn.execute(
         "INSERT INTO ticks VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [dt, market_id, yes_price, no_price, btc_usd, btc_coinbase, btc_kraken],
+        [dt, market_id, yes_price, no_price, btc_binance, btc_coinbase, btc_kraken],
     )
 
 
@@ -90,12 +106,13 @@ def write_latest_tick(
     market_id: str,
     yes_price: float | None,
     no_price: float | None,
-    btc_usd: float | None,
+    btc_binance: float | None,
     btc_coinbase: float | None,
     btc_kraken: float | None,
     open_btc_binance: float | None,
     open_btc_coinbase: float | None,
     open_btc_kraken: float | None,
+    ema_flags: dict | None = None,
 ) -> None:
     """Atomically overwrite /data/latest_tick.json so the model container can read it."""
     payload = {
@@ -103,12 +120,13 @@ def write_latest_tick(
         "market_id": market_id,
         "yes_price": yes_price,
         "no_price": no_price,
-        "btc_usd": btc_usd,
+        "btc_binance": btc_binance,
         "btc_coinbase": btc_coinbase,
         "btc_kraken": btc_kraken,
         "open_btc_binance": open_btc_binance,
         "open_btc_coinbase": open_btc_coinbase,
         "open_btc_kraken": open_btc_kraken,
+        **(ema_flags or {}),
     }
     dest = Path(settings.local_data_dir) / "latest_tick.json"
     tmp = dest.with_suffix(".json.tmp")
@@ -124,10 +142,11 @@ def export_batch(
     open_btc: tuple[float | None, float | None, float | None],
     resolved_yes_gamma: bool | None,
     resolved_yes_binance: bool | None,
+    ema_flags: dict | None = None,
 ) -> Path | None:
     """Export ticks for exactly one candle window to parquet, enriched with open prices and resolution."""
     rows = conn.execute(
-        "SELECT datetime, market_id, yes_price, no_price, btc_usd, btc_coinbase, btc_kraken "
+        "SELECT datetime, market_id, yes_price, no_price, btc_binance, btc_coinbase, btc_kraken "
         "FROM ticks "
         "WHERE datetime >= ? AND datetime < ? AND market_id = ? "
         "ORDER BY datetime",
@@ -142,6 +161,7 @@ def export_batch(
         return None
 
     open_binance, open_coinbase, open_kraken = open_btc
+    flags = ema_flags or {}
     n = len(rows)
 
     ts = int(candle_start.timestamp())
@@ -154,7 +174,7 @@ def export_batch(
             "datetime": [r[0] for r in rows],
             "yes_price": [r[2] for r in rows],
             "no_price": [r[3] for r in rows],
-            "btc_usd": [r[4] for r in rows],
+            "btc_binance": [r[4] for r in rows],
             "btc_coinbase": [r[5] for r in rows],
             "btc_kraken": [r[6] for r in rows],
             "open_btc_binance": [open_binance] * n,
@@ -162,6 +182,18 @@ def export_batch(
             "open_btc_kraken": [open_kraken] * n,
             "resolved_yes_gamma": [resolved_yes_gamma] * n,
             "resolved_yes_binance": [resolved_yes_binance] * n,
+            "above_ema9": [flags.get("above_ema9")] * n,
+            "above_ema20": [flags.get("above_ema20")] * n,
+            "above_ema34": [flags.get("above_ema34")] * n,
+            "above_all_emas": [flags.get("above_all_emas")] * n,
+            "below_all_emas": [flags.get("below_all_emas")] * n,
+            "ema9_value": [flags.get("ema9_value")] * n,
+            "ema20_value": [flags.get("ema20_value")] * n,
+            "ema34_value": [flags.get("ema34_value")] * n,
+            "prev_body_pct": [flags.get("prev_body_pct")] * n,
+            "prev_wick_ratio": [flags.get("prev_wick_ratio")] * n,
+            "prev_rel_volume": [flags.get("prev_rel_volume")] * n,
+            "prev_green": [flags.get("prev_green")] * n,
         },
         schema=_EXPORT_SCHEMA,
     )

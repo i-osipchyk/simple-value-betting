@@ -123,21 +123,91 @@ def fetch_market_info(
     raise RuntimeError(f"Failed to fetch market info after {retries} attempts") from last_exc
 
 
-def fetch_open_prices(candle_ts: int) -> tuple[float | None, float | None, float | None]:
-    """Fetch the 5-minute candle open price from Binance, Coinbase, and Kraken REST APIs."""
+_EMA_SPANS = (9, 20, 34)
+_EMA_FLAG_KEYS = (
+    "above_ema9", "above_ema20", "above_ema34", "above_all_emas", "below_all_emas",
+    "ema9_value", "ema20_value", "ema34_value",
+    "prev_body_pct", "prev_wick_ratio", "prev_rel_volume", "prev_green",
+)
+_EMA_FLAGS_NONE: dict[str, bool | float | None] = dict.fromkeys(_EMA_FLAG_KEYS, None)
+
+
+def _compute_ema(closes: list[float], span: int) -> float | None:
+    if len(closes) < span:
+        return None
+    alpha = 2.0 / (span + 1)
+    ema = closes[0]
+    for c in closes[1:]:
+        ema = c * alpha + ema * (1.0 - alpha)
+    return ema
+
+
+def fetch_open_prices(candle_ts: int) -> tuple[
+    float | None, float | None, float | None, dict[str, bool | float | None]
+]:
+    """Fetch open prices + previous-candle EMA flags.
+
+    One Binance call fetches 201 candles (endTime=candle_ts): the last entry is
+    the current candle (→ open price), the preceding 200 close prices feed
+    EMA9/20/34 for the candle that just closed (no leakage).
+    """
     binance_open: float | None = None
+    ema_flags: dict[str, bool | None] = dict(_EMA_FLAGS_NONE)
     coinbase_open: float | None = None
     kraken_open: float | None = None
 
     try:
-        url = f"{_BINANCE_KLINES_URL}?symbol=BTCUSDT&interval=5m&startTime={candle_ts * 1000}&limit=1"
+        url = (f"{_BINANCE_KLINES_URL}?symbol=BTCUSDT&interval=5m"
+               f"&endTime={candle_ts * 1000}&limit=201")
         resp = requests.get(url, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         if data:
-            binance_open = float(data[0][1])
+            last = data[-1]
+            if int(last[0]) == candle_ts * 1000:
+                binance_open = float(last[1])   # open of current candle
+                prev_closes = [float(c[4]) for c in data[:-1]]
+            else:
+                prev_closes = [float(c[4]) for c in data]
+
+            ema_vals = [_compute_ema(prev_closes, s) for s in _EMA_SPANS]
+            if binance_open is not None and all(v is not None for v in ema_vals):
+                e9, e20, e34 = ema_vals
+                ab9  = binance_open > e9
+                ab20 = binance_open > e20
+                ab34 = binance_open > e34
+                ema_flags = {
+                    "above_ema9":     ab9,
+                    "above_ema20":    ab20,
+                    "above_ema34":    ab34,
+                    "above_all_emas": ab9 and ab20 and ab34,
+                    "below_all_emas": not ab9 and not ab20 and not ab34,
+                    "ema9_value":     e9,
+                    "ema20_value":    e20,
+                    "ema34_value":    e34,
+                }
+
     except Exception as exc:
-        logger.warning("Binance candle open fetch failed for ts=%d: %s", candle_ts, exc)
+        logger.warning("Binance candle open/EMA fetch failed for ts=%d: %s", candle_ts, exc)
+        data = []
+
+    # Previous candle features — independent of open price, extracted outside the try so
+    # they survive a failed open-price fetch as long as klines data was returned.
+    if len(data) >= 2:
+        prev = data[-2]
+        p_open  = float(prev[1])
+        p_high  = float(prev[2])
+        p_low   = float(prev[3])
+        p_close = float(prev[4])
+        p_vol   = float(prev[5])
+        if p_open != 0:
+            ema_flags["prev_body_pct"]  = (p_close - p_open) / p_open
+            ema_flags["prev_wick_ratio"] = (p_high - p_low) / p_open
+        ema_flags["prev_green"] = p_close > p_open
+        vol_window = [float(c[5]) for c in data[-21:-1]]
+        if vol_window:
+            avg_vol = sum(vol_window) / len(vol_window)
+            ema_flags["prev_rel_volume"] = p_vol / avg_vol if avg_vol != 0 else None
 
     try:
         url = f"{_COINBASE_CANDLES_URL}?granularity=300"
@@ -162,12 +232,13 @@ def fetch_open_prices(candle_ts: int) -> tuple[float | None, float | None, float
         logger.warning("Kraken candle open fetch failed for ts=%d: %s", candle_ts, exc)
 
     logger.info(
-        "Open prices fetched — binance=%s  coinbase=%s  kraken=%s",
+        "Open prices fetched — binance=%s  coinbase=%s  kraken=%s  emas=%s",
         f"{binance_open:.2f}" if binance_open is not None else "N/A",
         f"{coinbase_open:.2f}" if coinbase_open is not None else "N/A",
         f"{kraken_open:.2f}" if kraken_open is not None else "N/A",
+        {k: v for k, v in ema_flags.items() if v is not None} or "N/A",
     )
-    return binance_open, coinbase_open, kraken_open
+    return binance_open, coinbase_open, kraken_open, ema_flags
 
 
 def fetch_binance_resolution(candle_ts: int) -> bool | None:
