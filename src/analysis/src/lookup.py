@@ -88,7 +88,8 @@ def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[tuple[int,
     if df.empty:
         return []
 
-    btc = df["btc_usd"].ffill()
+    btc_col = "btc_binance" if "btc_binance" in df.columns else "btc_usd"
+    btc = df[btc_col].ffill()
     has_btc = btc.notna().any()
 
     if has_btc:

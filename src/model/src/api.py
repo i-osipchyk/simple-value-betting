@@ -35,7 +35,7 @@ class PredictRequest(BaseModel):
     market_id: str
     yes_price: float
     no_price: float
-    btc_usd: float
+    btc_binance: float
     pct_change_binance: float
     time_remaining: int
     model_id: str = "logistic_regression"
@@ -69,7 +69,7 @@ async def predict_endpoint(req: PredictRequest):
             req.market_id,
             req.yes_price,
             req.no_price,
-            req.btc_usd,
+            req.btc_binance,
             req.pct_change_binance,
             req.time_remaining,
             req.model_id,

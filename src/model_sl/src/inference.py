@@ -54,7 +54,7 @@ async def inference_loop() -> None:
         if yes_price is None or no_price is None:
             continue
 
-        btc_usd: float | None = data.get("btc_usd")
+        btc_usd: float | None = data.get("btc_binance") or data.get("btc_usd")
         market_id: str = data["market_id"]
 
         now = datetime.now(tz=timezone.utc)

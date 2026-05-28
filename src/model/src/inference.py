@@ -38,7 +38,7 @@ async def inference_loop() -> None:
         if yes_price is None or no_price is None:
             continue
 
-        btc_usd: float | None = data.get("btc_usd")
+        btc_binance: float | None = data.get("btc_binance")
         btc_coinbase: float | None = data.get("btc_coinbase")
         btc_kraken: float | None = data.get("btc_kraken")
 
@@ -51,9 +51,35 @@ async def inference_loop() -> None:
                 return 0.0
             return (current - open_price) / open_price
 
-        pct_change_binance = _pct(btc_usd, open_btc_binance)
+        def _flag(val: bool | None) -> float:
+            if val is None:
+                return 0.0
+            return 1.0 if val else 0.0
+
+        pct_change_binance = _pct(btc_binance, open_btc_binance)
         pct_change_coinbase = _pct(btc_coinbase, open_btc_coinbase)
         pct_change_kraken = _pct(btc_kraken, open_btc_kraken)
+
+        above_ema9 = _flag(data.get("above_ema9"))
+        above_ema20 = _flag(data.get("above_ema20"))
+        above_ema34 = _flag(data.get("above_ema34"))
+        above_all_emas = _flag(data.get("above_all_emas"))
+        below_all_emas = _flag(data.get("below_all_emas"))
+
+        def _flt(key: str, default: float = 0.0) -> float:
+            v = data.get(key)
+            return float(v) if v is not None else default
+
+        ema9_value  = _flt("ema9_value")
+        ema20_value = _flt("ema20_value")
+        ema34_value = _flt("ema34_value")
+        ema9_dist   = _flt("ema9_dist")
+        ema20_dist  = _flt("ema20_dist")
+        ema34_dist  = _flt("ema34_dist")
+        prev_body_pct   = _flt("prev_body_pct")
+        prev_wick_ratio = _flt("prev_wick_ratio")
+        prev_rel_volume = _flt("prev_rel_volume", default=1.0)
+        prev_green      = _flag(data.get("prev_green"))
 
         now_ts = time.time()
         seconds_into_candle = int(now_ts) % interval_s
@@ -65,11 +91,26 @@ async def inference_loop() -> None:
                 data["market_id"],
                 float(yes_price),
                 float(no_price),
-                float(btc_usd) if btc_usd is not None else 0.0,
+                float(btc_binance) if btc_binance is not None else 0.0,
                 pct_change_binance,
                 time_remaining,
                 pct_change_coinbase,
                 pct_change_kraken,
+                above_ema9,
+                above_ema20,
+                above_ema34,
+                above_all_emas,
+                below_all_emas,
+                ema9_value,
+                ema20_value,
+                ema34_value,
+                ema9_dist,
+                ema20_dist,
+                ema34_dist,
+                prev_body_pct,
+                prev_wick_ratio,
+                prev_rel_volume,
+                prev_green,
             )
         except Exception:
             logger.exception("Inference error — skipping tick")

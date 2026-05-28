@@ -71,7 +71,8 @@ def _resolve_outcome(file: Path) -> tuple[str, bool] | None:
     if df.empty:
         return None
     market_id = str(df["market_id"].iloc[0])
-    btc = df["btc_usd"].dropna()
+    btc_col = "btc_binance" if "btc_binance" in df.columns else "btc_usd"
+    btc = df[btc_col].dropna()
     if len(btc) >= 2:
         return market_id, bool(btc.iloc[-1] > btc.iloc[0])
     yes = df["yes_price"].dropna()

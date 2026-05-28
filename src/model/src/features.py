@@ -88,11 +88,14 @@ def _read_open_prices(df: pd.DataFrame) -> tuple[float | None, float | None, flo
     coinbase = _col_val("open_btc_coinbase")
     kraken = _col_val("open_btc_kraken")
 
-    # Old-format fallback: use first btc_usd tick as binance open.
-    if binance is None and "btc_usd" in df.columns:
-        first = df["btc_usd"].dropna()
-        if not first.empty:
-            binance = float(first.iloc[0])
+    # Fallback: use first btc_binance (or old btc_usd) tick as open when open_btc_binance is null.
+    if binance is None:
+        for col in ("btc_binance", "btc_usd"):
+            if col in df.columns:
+                first = df[col].dropna()
+                if not first.empty:
+                    binance = float(first.iloc[0])
+                    break
 
     return binance, coinbase, kraken
 
@@ -112,7 +115,9 @@ def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
 
     open_binance, open_coinbase, open_kraken = _read_open_prices(df)
 
-    pct_binance = _pct_change_series(df["btc_usd"], open_price=open_binance)
+    # Support old files that used btc_usd before the rename.
+    btc_binance_col = "btc_binance" if "btc_binance" in df.columns else "btc_usd"
+    pct_binance = _pct_change_series(df[btc_binance_col], open_price=open_binance)
 
     pct_coinbase = (
         _pct_change_series(df["btc_coinbase"], open_price=open_coinbase)
@@ -127,6 +132,45 @@ def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
 
     market_id = str(df["market_id"].iloc[0])
     t_start = pd.Timestamp(df["datetime"].iloc[0])
+
+    def _bool_col(col: str) -> float:
+        if col in df.columns:
+            vals = df[col].dropna()
+            if not vals.empty:
+                return 1.0 if bool(vals.iloc[0]) else 0.0
+        return float("nan")
+
+    def _float_col(col: str) -> float:
+        if col in df.columns:
+            vals = df[col].dropna()
+            if not vals.empty:
+                return float(vals.iloc[0])
+        return float("nan")
+
+    above_ema9 = _bool_col("above_ema9")
+    above_ema20 = _bool_col("above_ema20")
+    above_ema34 = _bool_col("above_ema34")
+    above_all_emas = _bool_col("above_all_emas")
+    below_all_emas = _bool_col("below_all_emas")
+
+    ema9_value = _float_col("ema9_value")
+    ema20_value = _float_col("ema20_value")
+    ema34_value = _float_col("ema34_value")
+
+    # % distance of open price from each EMA — scale-invariant signal for the model.
+    def _ema_dist(ema_val: float) -> float:
+        if open_binance and open_binance != 0 and not pd.isna(ema_val):
+            return (open_binance - ema_val) / open_binance
+        return float("nan")
+
+    ema9_dist  = _ema_dist(ema9_value)
+    ema20_dist = _ema_dist(ema20_value)
+    ema34_dist = _ema_dist(ema34_value)
+
+    prev_body_pct   = _float_col("prev_body_pct")
+    prev_wick_ratio = _float_col("prev_wick_ratio")
+    prev_rel_volume = _float_col("prev_rel_volume")
+    prev_green      = _bool_col("prev_green")
 
     rows = []
     for row in df.itertuples():
@@ -146,6 +190,21 @@ def _rows_from_file(file: Path, candle_interval_s: int = 300) -> list[dict]:
             "yes_price": yes_f,
             "no_price": no_f,
             "spread": yes_f + no_f - 1.0,
+            "above_ema9": above_ema9,
+            "above_ema20": above_ema20,
+            "above_ema34": above_ema34,
+            "above_all_emas": above_all_emas,
+            "below_all_emas": below_all_emas,
+            "ema9_value": ema9_value,
+            "ema20_value": ema20_value,
+            "ema34_value": ema34_value,
+            "ema9_dist": ema9_dist,
+            "ema20_dist": ema20_dist,
+            "ema34_dist": ema34_dist,
+            "prev_body_pct": prev_body_pct,
+            "prev_wick_ratio": prev_wick_ratio,
+            "prev_rel_volume": prev_rel_volume,
+            "prev_green": prev_green,
             "resolved_yes": resolved_yes,
             "market_id": market_id,
         })
@@ -182,16 +241,27 @@ def extract_current_snapshot(file: Path, candle_interval_s: int = 300) -> dict |
     yes_f = float(yes) if pd.notna(yes) else 0.5
     no_f = float(no) if pd.notna(no) else 0.5
 
-    btc = df["btc_usd"].dropna()
+    btc_col = "btc_binance" if "btc_binance" in df.columns else "btc_usd"
+    btc = df[btc_col].dropna()
     btc_val = float(btc.iloc[-1]) if len(btc) > 0 else 0.0
 
     return {
         "market_id": str(last_row["market_id"]),
         "yes_price": yes_f,
         "no_price": no_f,
-        "btc_usd": btc_val,
+        "btc_binance": btc_val,
         "pct_change_binance": 0.0,
         "pct_change_coinbase": 0.0,
         "pct_change_kraken": 0.0,
         "time_remaining": candle_interval_s,
+        "ema9_value": 0.0,
+        "ema20_value": 0.0,
+        "ema34_value": 0.0,
+        "ema9_dist": 0.0,
+        "ema20_dist": 0.0,
+        "ema34_dist": 0.0,
+        "prev_body_pct": 0.0,
+        "prev_wick_ratio": 0.0,
+        "prev_rel_volume": 1.0,
+        "prev_green": 0.0,
     }
