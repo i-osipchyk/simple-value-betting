@@ -52,6 +52,8 @@ class PolymarketWSClient:
         self.market_info = market_info
         self.state = MarketState()
         self._stop_event = asyncio.Event()
+        # Set when the first YES or NO price is received — tick loop waits on this.
+        self.ready = asyncio.Event()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -87,7 +89,7 @@ class PolymarketWSClient:
             ws_url,
             ping_interval=30,
             ping_timeout=10,
-            close_timeout=10,
+            close_timeout=2,
         ) as ws:
             logger.info("Connected — market=%s", self.market_info.market_id)
             await self._subscribe(ws)
@@ -136,8 +138,10 @@ class PolymarketWSClient:
             self.state.events_received += 1
             if outcome == "yes":
                 self.state.yes_price = price
+                self.ready.set()
             elif outcome == "no":
                 self.state.no_price = price
+                self.ready.set()
 
         elif event_type in ("last_trade_price", "price_change"):
             price = _parse_price(event.get("price"))
@@ -146,8 +150,10 @@ class PolymarketWSClient:
             self.state.events_received += 1
             if outcome == "yes":
                 self.state.yes_price = price
+                self.ready.set()
             elif outcome == "no":
                 self.state.no_price = price
+                self.ready.set()
 
         elif event_type == "crypto_price":
             if "BTC" in asset_id.upper():
