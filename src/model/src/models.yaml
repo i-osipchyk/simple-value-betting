@@ -12,6 +12,13 @@ models:
       max_iter: 1000
       C: 1.0
       random_state: 42
+    entry_rules:
+      min_edge: 0.05
+      max_edge: 0.12
+      min_time: 100
+      max_time: 240
+      min_price: 0.75
+      max_price: 0.97
 
   - id: logistic_regression
     algorithm: logistic_regression
@@ -27,6 +34,13 @@ models:
       max_iter: 1000
       C: 1.0
       random_state: 42
+    entry_rules:
+      min_edge: 0.05
+      max_edge: 0.20
+      min_time: 60
+      max_time: 120
+      min_price: 0.04
+      max_price: 0.19
 
   - id: lightgbm
     algorithm: lightgbm
@@ -44,6 +58,13 @@ models:
       max_depth: 6
       num_leaves: 31
       random_state: 42
+    entry_rules:
+      min_edge: 0.05
+      max_edge: 0.20
+      min_time: 135
+      max_time: 285
+      min_price: 0.44
+      max_price: 0.50
 
   - id: xgboost
     algorithm: xgboost
@@ -60,3 +81,10 @@ models:
       max_depth: 6
       learning_rate: 0.05
       random_state: 42
+    entry_rules:
+      min_edge: 0.05
+      max_edge: 0.20
+      min_time: 135
+      max_time: 285
+      min_price: 0.44
+      max_price: 0.50

@@ -123,11 +123,11 @@ def infer(
         predicted_prob = float(model.predict_proba(X)[0, 1])
         edge = predicted_prob - yes_price
 
+        rules = model_cfg.get("entry_rules", {})
         tradeable = (
-            edge > 0
-            and time_remaining <= interval_s - 15  # skip first 15s
-            and time_remaining >= 15               # skip last 15s
-            and 0.04 < yes_price < 0.97            # skip near-certain markets
+            rules.get("min_edge", 0.0) <= edge <= rules.get("max_edge", float("inf"))
+            and rules.get("min_time", 0) <= time_remaining <= rules.get("max_time", interval_s)
+            and rules.get("min_price", 0.0) < yes_price < rules.get("max_price", 1.0)
         )
         results.append((model_cfg, metadata, predicted_prob, edge, tradeable))
 
