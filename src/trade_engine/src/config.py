@@ -8,6 +8,10 @@ _models_path = Path(__file__).parent / "models.yaml"
 with _models_path.open() as _f:
     MODELS: list[dict] = yaml.safe_load(_f)["models"]
 
+for _m in MODELS:
+    _m.setdefault("type", "ml")
+    _m.setdefault("stop_loss_delta", None)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

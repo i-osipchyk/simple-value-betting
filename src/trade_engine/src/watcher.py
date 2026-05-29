@@ -1,8 +1,14 @@
 """
-File watcher: resolves open trades and retrains whenever a new parquet batch lands in /data/raw/.
+File watcher: resolves open trades on resolution signals from the collector,
+and retrains models whenever a new raw parquet candle arrives.
+
+Resolution signals arrive as JSON files in /data/resolutions/ written by the
+collector after confirming the market outcome via Gamma API or Binance.
+New parquet files in /data/raw/ trigger model retraining only.
 """
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -10,7 +16,7 @@ from watchfiles import Change, awatch
 
 import trades
 from config import MODELS, settings
-from features import load_features, resolve_outcome
+from features import load_features
 from trainer import train
 
 logger = logging.getLogger(__name__)
@@ -20,31 +26,52 @@ _candle_counters: dict[str, int] = {m["id"]: 0 for m in MODELS}
 
 
 async def watch_and_resolve() -> None:
-    """Resolve open trades whenever a completed candle parquet arrives."""
     raw_dir = Path(settings.local_data_dir) / "raw"
+    resolutions_dir = Path(settings.local_data_dir) / "resolutions"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    resolutions_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Watching %s for completed candles", raw_dir)
-    async for changes in awatch(str(raw_dir)):
-        new_files = [
+    logger.info(
+        "Watching %s for resolution signals and %s for new candles",
+        resolutions_dir, raw_dir,
+    )
+    async for changes in awatch(str(raw_dir), str(resolutions_dir)):
+        resolution_files = [
+            Path(path)
+            for change, path in changes
+            if change in (Change.added, Change.modified)
+            and path.endswith(".json")
+            and not path.endswith(".json.tmp")
+            and Path(path).exists()
+        ]
+        parquet_files = [
             Path(path)
             for change, path in changes
             if change in (Change.added, Change.modified)
             and path.endswith(".parquet")
             and Path(path).exists()
         ]
-        if not new_files:
-            continue
 
-        latest = max(new_files, key=lambda f: f.stat().st_mtime)
-        logger.info("New candle: %s — resolving trades", latest.name)
+        for res_file in resolution_files:
+            try:
+                payload = json.loads(res_file.read_text())
+                market_id: str = payload["market_id"]
+                resolved_yes = payload.get("resolved_yes_gamma")
+                if resolved_yes is None:
+                    resolved_yes = payload.get("resolved_yes_binance")
+                if resolved_yes is None:
+                    logger.warning("No resolution value in %s — skipping", res_file.name)
+                    continue
+                logger.info(
+                    "Resolution signal: market=%s  outcome=%s",
+                    market_id[:20], "YES" if resolved_yes else "NO",
+                )
+                await asyncio.to_thread(trades.resolve_market, market_id, bool(resolved_yes))
+            except Exception:
+                logger.exception("Failed to process resolution file %s", res_file.name)
 
-        outcome = await asyncio.to_thread(resolve_outcome, latest)
-        if outcome is not None:
-            market_id, resolved_yes = outcome
-            await asyncio.to_thread(trades.resolve_market, market_id, resolved_yes)
-
-        await _run_training()
+        if parquet_files:
+            await _run_training()
 
 
 async def _run_training() -> None:

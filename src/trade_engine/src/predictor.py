@@ -15,6 +15,7 @@ from config import MODELS, settings
 logger = logging.getLogger(__name__)
 
 _GREEN = "\033[32m"
+_RED = "\033[31m"
 _BOLD = "\033[1m"
 _RESET = "\033[0m"
 
@@ -155,6 +156,26 @@ def infer(
     """Run inference for all configured models and log one summary line per tick."""
     interval_s = settings.candle_interval_minutes * 60
     results: list[tuple[dict, float, float, bool]] = []  # (model_cfg, predicted_prob, edge, tradeable)
+
+    # Stop-loss: close any open positions that have moved against us past the configured threshold.
+    for model_cfg in MODELS:
+        delta = model_cfg.get("stop_loss_delta")
+        if delta is None:
+            continue
+        try:
+            open_positions = trades.get_open_positions(model_cfg["id"], market_id)
+        except Exception:
+            logger.exception("Error fetching open positions for stop-loss check: model=%s", model_cfg["id"])
+            continue
+        for pos in open_positions:
+            entry = float(pos.get("yes_price") or 0.0)
+            if entry > 0 and yes_price <= entry - delta:
+                trades.stop_loss_exit(model_cfg["id"], pos["trade_id"], yes_price)
+                pnl = yes_price / entry - 1.0
+                logger.info(
+                    "%s%sSTOP-LOSS  model=%-30s  market=%s  entry=%.3f  exit=%.3f  pnl=%+.3f%s",
+                    _RED, _BOLD, model_cfg["id"], market_id[:20], entry, yes_price, pnl, _RESET,
+                )
 
     for model_cfg in MODELS:
         model, metadata = registry.load_model(model_cfg["id"], expected_features=model_cfg["features"])

@@ -142,6 +142,8 @@ async def _finalize_candle(
 
         logger.info("Resolution — gamma=%s  binance=%s", gamma_res, binance_res)
 
+        storage.write_resolution(market_id, candle_ts, gamma_res, binance_res)
+
         path = storage.export_batch(
             conn, candle_start, candle_end, market_id,
             open_btc, gamma_res, binance_res, ema_flags,

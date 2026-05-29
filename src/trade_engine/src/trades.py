@@ -37,11 +37,13 @@ CREATE TABLE IF NOT EXISTS trades (
     predicted_prob  DOUBLE,
     edge            DOUBLE,
     model_id        VARCHAR,
+    strategy_id     VARCHAR,
     stake           DOUBLE,
     resolved_yes    BOOLEAN,
     resolved_at     TIMESTAMPTZ,
     pnl             DOUBLE,
-    exit_reason     VARCHAR
+    exit_reason     VARCHAR,
+    exit_price      DOUBLE
 )
 """
 
@@ -88,11 +90,33 @@ def open_trade(
         "edge": edge,
         "model_id": model_id,
         "stake": STAKE,
+        "strategy_id": config_id,
         "resolved_yes": None,
         "resolved_at": None,
         "pnl": None,
         "exit_reason": None,
+        "exit_price": None,
     })
+
+
+def get_open_positions(config_id: str, market_id: str) -> list[dict]:
+    """Return all open (unresolved, not stop-loss exited) trades for a market."""
+    return _get_store(config_id).select(
+        "market_id = ? AND exit_reason IS NULL", [market_id]
+    )
+
+
+def stop_loss_exit(config_id: str, trade_id: str, exit_price: float) -> None:
+    """Close a trade at stop-loss price before market resolution."""
+    _get_store(config_id).execute(
+        """UPDATE trades SET
+               exit_reason = 'stop_loss',
+               exit_price  = ?,
+               resolved_at = ?,
+               pnl = stake * (? / yes_price) - stake
+           WHERE trade_id = ? AND exit_reason IS NULL""",
+        [exit_price, datetime.now(tz=timezone.utc), exit_price, trade_id],
+    )
 
 
 def resolve_market(market_id: str, resolved_yes: bool) -> None:

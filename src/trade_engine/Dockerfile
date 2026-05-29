@@ -7,10 +7,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 WORKDIR /app
 
 # Dependencies layer — cached unless pyproject.toml or uv.lock change
-COPY src/model/pyproject.toml src/model/uv.lock ./
+COPY src/trade_engine/pyproject.toml src/trade_engine/uv.lock ./
 RUN uv sync --frozen --no-dev
 
-COPY src/model/src/ ./src/
+COPY src/trade_engine/src/ ./src/
 COPY src/shared/ ./src/
 
 ENV PYTHONPATH=/app/src

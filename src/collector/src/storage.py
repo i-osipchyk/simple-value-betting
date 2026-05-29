@@ -134,6 +134,28 @@ def write_latest_tick(
     tmp.rename(dest)  # atomic on POSIX
 
 
+def write_resolution(
+    market_id: str,
+    candle_ts: int,
+    resolved_yes_gamma: bool | None,
+    resolved_yes_binance: bool | None,
+) -> Path:
+    """Write an atomic resolution signal file for the trade engine to consume."""
+    resolutions_dir = Path(settings.local_data_dir) / "resolutions"
+    resolutions_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "market_id": market_id,
+        "candle_ts": candle_ts,
+        "resolved_yes_gamma": resolved_yes_gamma,
+        "resolved_yes_binance": resolved_yes_binance,
+    }
+    path = resolutions_dir / f"resolved_{market_id}_{candle_ts}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.rename(path)
+    return path
+
+
 def export_batch(
     conn: duckdb.DuckDBPyConnection,
     candle_start: datetime,

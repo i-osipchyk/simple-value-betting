@@ -1,5 +1,5 @@
 """
-Model container entry point.
+Trade engine entry point.
 
 Runs three concurrent tasks:
   - uvicorn FastAPI server on port 8000
@@ -65,7 +65,7 @@ async def main() -> None:
     if infer_task and not infer_task.done():
         infer_task.cancel()
     await asyncio.gather(watcher_task, supervisor_task, server_task, return_exceptions=True)
-    logger.info("Model container stopped cleanly")
+    logger.info("Trade engine stopped cleanly")
 
 
 if __name__ == "__main__":

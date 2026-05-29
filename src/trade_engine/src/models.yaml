@@ -1,5 +1,7 @@
 models:
   - id: logistic_regression_baseline
+    type: ml
+    stop_loss_delta: null
     algorithm: logistic_regression
     features:
       - pct_change_binance
@@ -21,6 +23,8 @@ models:
       max_price: 0.97
 
   - id: logistic_regression
+    type: ml
+    stop_loss_delta: null
     algorithm: logistic_regression
     features:
       - time_remaining
@@ -43,6 +47,8 @@ models:
       max_price: 0.19
 
   - id: lightgbm
+    type: ml
+    stop_loss_delta: null
     algorithm: lightgbm
     features:
       - time_remaining
@@ -67,6 +73,8 @@ models:
       max_price: 0.50
 
   - id: xgboost
+    type: ml
+    stop_loss_delta: null
     algorithm: xgboost
     features:
       - time_remaining
