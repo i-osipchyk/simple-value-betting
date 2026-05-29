@@ -9,7 +9,6 @@ from pydantic import BaseModel
 
 import predictor
 import registry
-import storage
 import watcher
 from config import MODELS, settings
 from features import load_features
@@ -87,7 +86,6 @@ async def predict_endpoint(req: PredictRequest):
 def status_endpoint():
     return {
         "models": registry.list_models(),
-        "predictions_count": storage.count_predictions(),
         "uptime_seconds": int(time.time() - _started_at),
     }
 

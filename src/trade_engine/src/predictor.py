@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import pandas as pd
 
 import registry
-import storage
 import trades
 from config import MODELS, settings
 
@@ -100,22 +99,8 @@ def predict(
     edge = predicted_prob - market_prob
 
     version_id = metadata.get("model_id", "unknown")
-    pred_id = storage.write_prediction(
-        market_id=market_id,
-        yes_price=yes_price,
-        no_price=no_price,
-        btc_usd=btc_binance,
-        pct_change_binance=pct_change_binance,
-        time_remaining=time_remaining,
-        predicted_prob=predicted_prob,
-        market_prob=market_prob,
-        edge=edge,
-        model_id=version_id,
-        algorithm=model_cfg["algorithm"],
-    )
 
     result = {
-        "id": pred_id,
         "predicted_prob": round(predicted_prob, 4),
         "market_prob": round(market_prob, 4),
         "edge": round(edge, 4),

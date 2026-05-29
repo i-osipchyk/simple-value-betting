@@ -1,13 +1,11 @@
 """
-Trade ledger backed by DuckDB with parquet export on resolution.
+Trade ledger backed by a single DuckDB table with parquet export on resolution.
 
-Each model config gets its own DuckDB file and parquet directory:
-  logistic_regression → /data/logistic_regression_trades.db + /data/trades/logistic_regression/
-  lightgbm            → /data/lightgbm_trades.db            + /data/trades/lightgbm/
-  xgboost             → /data/xgboost_trades.db             + /data/trades/xgboost/
+All strategies write to the same table; the strategy_id column identifies which
+model or heuristic produced each trade.
 
-Open trades live in the per-model DB until the market resolves, then exported
-to the model's parquet directory and deleted from the DB.
+  /data/trades.db                         ← live open trades
+  /data/trades/trades_{ts}.parquet        ← resolved trades, one file per market close
 """
 
 import logging
@@ -47,19 +45,19 @@ CREATE TABLE IF NOT EXISTS trades (
 )
 """
 
-# One store per model config id, created on first access
-_stores: dict[str, TableStore] = {}
+_store: TableStore | None = None
 
 
-def _get_store(config_id: str) -> TableStore:
-    if config_id not in _stores:
-        _stores[config_id] = TableStore(
-            db_path=str(Path(settings.local_data_dir) / f"{config_id}_trades.db"),
+def _get_store() -> TableStore:
+    global _store
+    if _store is None:
+        _store = TableStore(
+            db_path=str(Path(settings.local_data_dir) / "trades.db"),
             table_name="trades",
             create_sql=_CREATE_SQL,
-            parquet_dir=Path(settings.local_data_dir) / "trades" / config_id,
+            parquet_dir=Path(settings.local_data_dir) / "trades",
         )
-    return _stores[config_id]
+    return _store
 
 
 def open_trade(
@@ -75,7 +73,7 @@ def open_trade(
     edge: float,
     model_id: str,
 ) -> None:
-    _get_store(config_id).insert({
+    _get_store().insert({
         "trade_id": str(uuid.uuid4()),
         "opened_at": datetime.now(tz=timezone.utc),
         "market_id": market_id,
@@ -89,8 +87,8 @@ def open_trade(
         "predicted_prob": predicted_prob,
         "edge": edge,
         "model_id": model_id,
-        "stake": STAKE,
         "strategy_id": config_id,
+        "stake": STAKE,
         "resolved_yes": None,
         "resolved_at": None,
         "pnl": None,
@@ -100,15 +98,16 @@ def open_trade(
 
 
 def get_open_positions(config_id: str, market_id: str) -> list[dict]:
-    """Return all open (unresolved, not stop-loss exited) trades for a market."""
-    return _get_store(config_id).select(
-        "market_id = ? AND exit_reason IS NULL", [market_id]
+    """Return all open (unresolved, not stop-loss exited) trades for a strategy + market."""
+    return _get_store().select(
+        "strategy_id = ? AND market_id = ? AND exit_reason IS NULL",
+        [config_id, market_id],
     )
 
 
 def stop_loss_exit(config_id: str, trade_id: str, exit_price: float) -> None:
     """Close a trade at stop-loss price before market resolution."""
-    _get_store(config_id).execute(
+    _get_store().execute(
         """UPDATE trades SET
                exit_reason = 'stop_loss',
                exit_price  = ?,
@@ -120,14 +119,8 @@ def stop_loss_exit(config_id: str, trade_id: str, exit_price: float) -> None:
 
 
 def resolve_market(market_id: str, resolved_yes: bool) -> None:
-    """Resolve trades for all configured models for this market."""
-    for m in MODELS:
-        _resolve_for_store(_get_store(m["id"]), m["id"], market_id, resolved_yes)
-
-
-def _resolve_for_store(
-    store: TableStore, config_id: str, market_id: str, resolved_yes: bool
-) -> None:
+    """Resolve all open trades for this market across every strategy."""
+    store = _get_store()
     fee = settings.pm_fee
     now = datetime.now(tz=timezone.utc)
 
@@ -151,25 +144,28 @@ def _resolve_for_store(
     )
 
     exported = store.export_and_delete("market_id = ?", [market_id])
-    _log_summary(store, config_id, exported, market_id, resolved_yes)
+    _log_summary(store, exported, market_id, resolved_yes)
 
 
 def _log_summary(
-    store: TableStore, config_id: str, rows: list[dict], market_id: str, resolved_yes: bool
+    store: TableStore, rows: list[dict], market_id: str, resolved_yes: bool
 ) -> None:
     if not rows:
         return
-    pnl = sum(r["pnl"] for r in rows if r["pnl"] is not None)
-    wins = sum(1 for r in rows if r.get("pnl", 0) > 0)
-    logger.info(
-        "RESOLVED  model=%s  market=%s  outcome=%s  trades=%d  wins=%d  pnl=%+.2f",
-        config_id,
-        market_id[:20],
-        "YES" if resolved_yes else "NO",
-        len(rows),
-        wins,
-        pnl,
-    )
+
+    by_strategy: dict[str, list[dict]] = {}
+    for r in rows:
+        sid = r.get("strategy_id") or "unknown"
+        by_strategy.setdefault(sid, []).append(r)
+
+    for strategy_id, strategy_rows in sorted(by_strategy.items()):
+        pnl = sum(r["pnl"] for r in strategy_rows if r["pnl"] is not None)
+        wins = sum(1 for r in strategy_rows if (r.get("pnl") or 0) > 0)
+        logger.info(
+            "RESOLVED  strategy=%-30s  market=%s  outcome=%s  trades=%d  wins=%d  pnl=%+.2f",
+            strategy_id, market_id[:20], "YES" if resolved_yes else "NO",
+            len(strategy_rows), wins, pnl,
+        )
 
     stats = store.aggregate_exported(
         "COUNT(*) AS n, "
@@ -179,6 +175,6 @@ def _log_summary(
     if stats and stats["n"]:
         roi = 100.0 * stats["total_pnl"] / (stats["n"] * STAKE)
         logger.info(
-            "OVERALL   model=%s  trades=%d  wins=%d  pnl=%+.2f  roi=%+.1f%%",
-            config_id, stats["n"], stats["wins"], stats["total_pnl"], roi,
+            "OVERALL   trades=%d  wins=%d  pnl=%+.2f  roi=%+.1f%%",
+            stats["n"], stats["wins"], stats["total_pnl"], roi,
         )
