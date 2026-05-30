@@ -221,3 +221,10 @@ __marimo__/
 
 # Runtime data — bind-mounted volume, not source code
 data/
+
+
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform.lock.hcl
