@@ -9,10 +9,10 @@ terraform {
   }
 
   backend "s3" {
-    bucket               = "polymarket-terraform-state"
+    bucket               = "polymarket-terraform-state-281324666910"
     key                  = "polymarket/terraform.tfstate"
     region               = "eu-central-1"
-    dynamodb_table       = "polymarket-terraform-locks"
+    use_lockfile         = true
     encrypt              = true
     workspace_key_prefix = "workspaces"
   }

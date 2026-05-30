@@ -31,7 +31,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size           = var.environment == "prod" ? 30 : 20
+      volume_size           = var.environment == "prod" ? 40 : 30
       volume_type           = "gp3"
       delete_on_termination = false
       encrypted             = true
@@ -144,9 +144,10 @@ resource "aws_ecs_task_definition" "main" {
 
   container_definitions = jsonencode([
     {
-      name      = "collector"
-      image     = "${aws_ecr_repository.collector.repository_url}:latest"
-      essential = true
+      name              = "collector"
+      image             = "${aws_ecr_repository.collector.repository_url}:latest"
+      essential         = true
+      memoryReservation = 350
       mountPoints = [{
         sourceVolume  = "data"
         containerPath = "/data"
@@ -180,9 +181,10 @@ resource "aws_ecs_task_definition" "main" {
       }
     },
     {
-      name      = "trade_engine"
-      image     = "${aws_ecr_repository.trade_engine.repository_url}:latest"
-      essential = true
+      name              = "trade_engine"
+      image             = "${aws_ecr_repository.trade_engine.repository_url}:latest"
+      essential         = true
+      memoryReservation = 350
       mountPoints = [{
         sourceVolume  = "data"
         containerPath = "/data"

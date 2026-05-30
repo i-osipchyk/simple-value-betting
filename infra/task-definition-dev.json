@@ -15,6 +15,7 @@
       "name": "collector",
       "image": "COLLECTOR_IMAGE",
       "essential": true,
+      "memoryReservation": 350,
       "mountPoints": [
         { "sourceVolume": "data", "containerPath": "/data", "readOnly": false }
       ],
@@ -49,6 +50,7 @@
       "name": "trade_engine",
       "image": "TRADE_ENGINE_IMAGE",
       "essential": true,
+      "memoryReservation": 350,
       "mountPoints": [
         { "sourceVolume": "data", "containerPath": "/data", "readOnly": false }
       ],

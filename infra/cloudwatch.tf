@@ -55,7 +55,7 @@ resource "aws_cloudwatch_metric_alarm" "ec2_high_cpu" {
 # ── EBS snapshot lifecycle (daily, retain 7 days) ─────────────────────────────
 
 resource "aws_dlm_lifecycle_policy" "ebs_backup" {
-  description        = "Daily EBS snapshots for ${var.environment} — retain 7"
+  description        = "Daily EBS snapshots for ${var.environment} - retain 7"
   execution_role_arn = aws_iam_role.dlm_lifecycle.arn
   state              = "ENABLED"
 
