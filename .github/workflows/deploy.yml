@@ -1,0 +1,102 @@
+name: Deploy
+
+on:
+  push:
+    branches: [dev, main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set environment
+        id: env
+        run: |
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "name=prod"    >> $GITHUB_OUTPUT
+            echo "cluster=polymarket-prod-cluster" >> $GITHUB_OUTPUT
+            echo "service=polymarket-prod-service" >> $GITHUB_OUTPUT
+          else
+            echo "name=dev"     >> $GITHUB_OUTPUT
+            echo "cluster=polymarket-dev-cluster"  >> $GITHUB_OUTPUT
+            echo "service=polymarket-dev-service"  >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Get AWS account ID
+        id: account
+        run: echo "id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+
+      - name: Build and push collector
+        id: collector
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/collector:$IMAGE_TAG \
+            ./src/collector
+          docker push $ECR_REGISTRY/collector:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/collector:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Build and push trade_engine
+        id: trade_engine
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/trade_engine:$IMAGE_TAG \
+            -f src/trade_engine/Dockerfile \
+            .
+          docker push $ECR_REGISTRY/trade_engine:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/trade_engine:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Substitute ARN placeholders in task definition
+        env:
+          ACCOUNT_ID: ${{ steps.account.outputs.id }}
+          ENV_NAME: ${{ steps.env.outputs.name }}
+        run: |
+          cp infra/task-definition-${ENV_NAME}.json task-definition.json
+          sed -i "s/{{ACCOUNT_ID}}/${ACCOUNT_ID}/g" task-definition.json
+
+      - name: Render task definition — collector image
+        id: render-collector
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: collector
+          image: ${{ steps.collector.outputs.image }}
+
+      - name: Render task definition — trade_engine image
+        id: render-trade-engine
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-collector.outputs.task-definition }}
+          container-name: trade_engine
+          image: ${{ steps.trade_engine.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-trade-engine.outputs.task-definition }}
+          service: ${{ steps.env.outputs.service }}
+          cluster: ${{ steps.env.outputs.cluster }}
+          wait-for-service-stability: true

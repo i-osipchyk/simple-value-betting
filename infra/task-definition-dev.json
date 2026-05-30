@@ -1,0 +1,82 @@
+{
+  "family": "polymarket-dev-task",
+  "executionRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/polymarket-dev-execution-role",
+  "taskRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/polymarket-dev-task-role",
+  "networkMode": "bridge",
+  "requiresCompatibilities": ["EC2"],
+  "volumes": [
+    {
+      "name": "data",
+      "host": { "sourcePath": "/opt/app/data" }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "collector",
+      "image": "COLLECTOR_IMAGE",
+      "essential": true,
+      "mountPoints": [
+        { "sourceVolume": "data", "containerPath": "/data", "readOnly": false }
+      ],
+      "environment": [
+        { "name": "ENV", "value": "aws" },
+        { "name": "LOCAL_DATA_DIR", "value": "/data" },
+        { "name": "AWS_BUCKET", "value": "polymarket-ml-dev" },
+        { "name": "AWS_REGION", "value": "eu-central-1" },
+        { "name": "PM_WS_URL", "value": "wss://ws-subscriptions-clob.polymarket.com" },
+        { "name": "PM_SLUG_PREFIX", "value": "btc-updown-5m" },
+        { "name": "CANDLE_INTERVAL_MINUTES", "value": "5" },
+        { "name": "TICK_INTERVAL_SECONDS", "value": "1.0" },
+        { "name": "EXPORT_INTERVAL_MINUTES", "value": "5" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "test -f /data/raw_data.db || exit 1"],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 5,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/dev/collector",
+          "awslogs-region": "eu-central-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    },
+    {
+      "name": "trade_engine",
+      "image": "TRADE_ENGINE_IMAGE",
+      "essential": true,
+      "mountPoints": [
+        { "sourceVolume": "data", "containerPath": "/data", "readOnly": false }
+      ],
+      "dependsOn": [
+        { "containerName": "collector", "condition": "HEALTHY" }
+      ],
+      "environment": [
+        { "name": "ENV", "value": "aws" },
+        { "name": "LOCAL_DATA_DIR", "value": "/data" },
+        { "name": "AWS_REGION", "value": "eu-central-1" },
+        { "name": "CANDLE_INTERVAL_MINUTES", "value": "5" },
+        { "name": "PM_FEE", "value": "0.02" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/dev/trade_engine",
+          "awslogs-region": "eu-central-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
