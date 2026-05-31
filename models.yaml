@@ -1,0 +1,35 @@
+models:
+  - id: logistic_regression_baseline
+    type: ml
+    stop_loss_delta: null
+    algorithm: logistic_regression
+    features:
+      - pct_change_binance
+      - time_remaining
+      - spread
+    min_training_rows: 1500
+    max_training_rows: 100000
+    retrain_every_n_candles: 1
+    params:
+      max_iter: 1000
+      C: 1.0
+      random_state: 42
+    entry_rules:
+      min_edge: 0.0
+      min_time: 10
+      max_time: 290
+      min_price: 0.04
+      max_price: 0.97
+
+  - id: empirical
+    type: empirical
+    stop_loss_delta: null
+    time_bucket_s: 30
+    pct_bucket_size: 0.001
+    min_bucket_count: 20
+    entry_rules:
+      min_edge: 0.0
+      min_time: 10
+      max_time: 290
+      min_price: 0.04
+      max_price: 0.97

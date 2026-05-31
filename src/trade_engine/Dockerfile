@@ -12,6 +12,7 @@ RUN uv sync --frozen --no-dev
 
 COPY src/trade_engine/src/ ./src/
 COPY src/shared/ ./src/
+COPY models.yaml ./src/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

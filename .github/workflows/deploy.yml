@@ -3,6 +3,11 @@ name: Deploy
 on:
   push:
     branches: [dev, main]
+    paths:
+      - "src/**"
+      - "models.yaml"
+      - "infra/task-definition-*.json"
+      - ".github/workflows/deploy.yml"
 
 permissions:
   id-token: write
