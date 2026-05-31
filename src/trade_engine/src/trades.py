@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import s3_sync
 from config import MODELS, settings
 from table_store import TableStore
 
@@ -143,8 +144,11 @@ def resolve_market(market_id: str, resolved_yes: bool) -> None:
         [resolved_yes, now, market_id, win_side],
     )
 
-    exported = store.export_and_delete("market_id = ?", [market_id])
+    exported, parquet_path = store.export_and_delete("market_id = ?", [market_id])
     _log_summary(store, exported, market_id, resolved_yes)
+
+    if parquet_path:
+        s3_sync.save(parquet_path)
 
 
 def _log_summary(

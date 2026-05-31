@@ -63,10 +63,12 @@ class TableStore:
             cols = [d[0] for d in rel.description]
             return [dict(zip(cols, row)) for row in rel.fetchall()]
 
-    def export_and_delete(self, where_sql: str = "TRUE", params: list | None = None) -> list[dict]:
+    def export_and_delete(
+        self, where_sql: str = "TRUE", params: list | None = None
+    ) -> tuple[list[dict], Path | None]:
         """
         Export matching rows to a timestamped parquet file, delete them from the DB.
-        Returns the exported rows as a list of dicts.
+        Returns (rows, parquet_path); parquet_path is None if there were no rows.
         """
         with self._lock:
             arrow_tbl = self._conn.execute(
@@ -75,7 +77,7 @@ class TableStore:
             ).fetch_arrow_table()
 
             if arrow_tbl.num_rows == 0:
-                return []
+                return [], None
 
             ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
             out_path = self._parquet_dir / f"{self._table}_{ts}.parquet"
@@ -86,7 +88,7 @@ class TableStore:
                 params or [],
             )
 
-            return arrow_tbl.to_pylist()
+            return arrow_tbl.to_pylist(), out_path
 
     def aggregate_exported(self, select_cols: str) -> dict | None:
         """

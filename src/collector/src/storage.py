@@ -8,6 +8,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+import s3_sync
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -223,4 +224,5 @@ def export_batch(
     pq.write_table(table, tmp_path, compression="snappy")
     tmp_path.rename(out_path)  # atomic on POSIX — watcher only sees complete files
     logger.info("Exported %d rows → %s", n, out_path)
+    s3_sync.save(out_path)
     return out_path

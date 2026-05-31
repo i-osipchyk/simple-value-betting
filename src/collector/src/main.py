@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 import btc_feed
 import coinbase_feed
 import kraken_feed
-import s3_sync
 import storage
 from config import MARKETS, settings
 from market import MarketInfo, fetch_binance_resolution, fetch_gamma_resolution, fetch_market_info, fetch_open_prices
@@ -148,8 +147,7 @@ async def _finalize_candle(
             conn, candle_start, candle_end, market_id,
             open_btc, gamma_res, binance_res, ema_flags,
         )
-        if path:
-            s3_sync.save(path)
+        # S3 upload is handled inside storage.export_batch()
     except Exception:
         logger.exception("Finalization failed for market %s candle_ts=%d", market_id, candle_ts)
 
