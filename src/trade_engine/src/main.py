@@ -10,10 +10,14 @@ Runs three concurrent tasks:
 import asyncio
 import logging
 import signal
+from pathlib import Path
 
 import uvicorn
 
+import history
+import lookup
 from api import app
+from config import settings
 from inference import inference_loop
 from watcher import watch_and_resolve
 
@@ -25,6 +29,15 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
+    raw_dir = Path(settings.local_data_dir) / "raw"
+    await asyncio.to_thread(history.init, raw_dir)
+    conn = history.get_connection()
+    initial_table = await asyncio.to_thread(
+        lookup.build_from_db, conn,
+        30, 0.001, settings.candle_interval_minutes * 60,
+    )
+    lookup.set_table(initial_table)
+
     global_stop = asyncio.Event()
 
     def _shutdown(sig: signal.Signals) -> None:

@@ -187,9 +187,13 @@ def export_batch(
     flags = ema_flags or {}
     n = len(rows)
 
-    ts = int(candle_start.timestamp())
-    filename = f"ticks_{market_id}_{ts}.parquet"
-    out_path = _raw_dir() / filename
+    utc = candle_start.astimezone(timezone.utc)
+    partition_dir = (
+        Path(settings.local_data_dir) / "raw"
+        / f"{utc.year}/{utc.month:02d}/{utc.day:02d}/{utc.hour:02d}"
+    )
+    partition_dir.mkdir(parents=True, exist_ok=True)
+    out_path = partition_dir / f"minute_{utc.minute:02d}_{market_id}.parquet"
 
     table = pa.table(
         {

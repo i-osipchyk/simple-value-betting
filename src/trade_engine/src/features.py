@@ -21,7 +21,7 @@ _REQUIRED_FEATURES = ["pct_change_binance", "time_remaining", "yes_price", "no_p
 
 def load_features(raw_dir: Path, candle_interval_s: int = 300) -> pd.DataFrame:
     """Load all parquet files and return a training DataFrame."""
-    files = sorted(raw_dir.glob("ticks_*.parquet"))
+    files = sorted(raw_dir.rglob("minute_*.parquet"))
     if not files:
         return pd.DataFrame()
 

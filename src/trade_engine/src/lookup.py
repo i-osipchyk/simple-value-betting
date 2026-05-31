@@ -16,6 +16,7 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -23,33 +24,97 @@ logger = logging.getLogger(__name__)
 # {(time_bucket: int, pct_index: int): (n: int, prob_yes: float)}
 Table = dict[tuple[int, int], tuple[int, float]]
 
+# Module-level table rebuilt after each new candle.
+_table: Table = {}
+
+
+def get_table() -> Table:
+    return _table
+
+
+def set_table(t: Table) -> None:
+    global _table
+    _table = t
+
+
+def build_from_db(
+    conn: duckdb.DuckDBPyConnection,
+    time_bucket_s: int,
+    pct_bucket_size: float,
+    candle_interval_s: int = 300,
+) -> Table:
+    """Build lookup table from the history DB raw_ticks table."""
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM raw_ticks").fetchone()[0]
+    except Exception:
+        return {}
+    if n == 0:
+        return {}
+
+    df = conn.execute(
+        "SELECT datetime, market_id, btc_binance, open_btc_binance, "
+        "resolved_yes_gamma, resolved_yes_binance FROM raw_ticks ORDER BY market_id, datetime"
+    ).df()
+
+    return _build_from_df(df, time_bucket_s, pct_bucket_size, candle_interval_s)
+
 
 def build_table(raw_dir: Path, time_bucket_s: int, pct_bucket_size: float, candle_interval_s: int = 300) -> Table:
-    files = sorted(raw_dir.glob("ticks_*.parquet"))
+    files = sorted(raw_dir.rglob("minute_*.parquet"))
     if not files:
         return {}
 
-    counts: dict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0])  # [n, sum_yes]
-    total_rows = 0
-
+    rows: list[tuple[int, float, int]] = []
     for f in files:
         try:
-            for time_remaining, pct_change, resolved_yes in _rows_from_file(f, candle_interval_s):
-                t_key = (time_remaining // time_bucket_s) * time_bucket_s
-                p_index = round(pct_change / pct_bucket_size)
-                counts[(t_key, p_index)][0] += 1
-                counts[(t_key, p_index)][1] += resolved_yes
-                total_rows += 1
+            rows.extend(_rows_from_file(f, candle_interval_s))
         except Exception as exc:
             logger.warning("Skipping %s: %s", f.name, exc)
 
+    return _bucket(rows, time_bucket_s, pct_bucket_size, source=f"{len(files)} files")
+
+
+def _build_from_df(
+    df: pd.DataFrame,
+    time_bucket_s: int,
+    pct_bucket_size: float,
+    candle_interval_s: int,
+) -> Table:
+    rows: list[tuple[int, float, int]] = []
+    for market_id, group in df.groupby("market_id"):
+        group = group.sort_values("datetime").reset_index(drop=True)
+        btc = group["btc_binance"].ffill()
+        open_btc = group["open_btc_binance"].iloc[0]
+        res_gamma = group["resolved_yes_gamma"].iloc[-1]
+        res_binance = group["resolved_yes_binance"].iloc[-1]
+        if res_gamma is not None and not pd.isna(res_gamma):
+            resolved_yes = int(bool(res_gamma))
+        elif res_binance is not None and not pd.isna(res_binance):
+            resolved_yes = int(bool(res_binance))
+        else:
+            continue
+        t_start = pd.Timestamp(group["datetime"].iloc[0])
+        for i, row in group.iterrows():
+            elapsed = (pd.Timestamp(row["datetime"]) - t_start).total_seconds()
+            time_remaining = max(0, int(candle_interval_s - elapsed))
+            btc_now = btc.iloc[i]
+            if pd.notna(btc_now) and open_btc and open_btc != 0:
+                pct = (float(btc_now) - float(open_btc)) / float(open_btc)
+            else:
+                pct = 0.0
+            rows.append((time_remaining, pct, resolved_yes))
+    return _bucket(rows, time_bucket_s, pct_bucket_size, source="history.db")
+
+
+def _bucket(rows: list[tuple[int, float, int]], time_bucket_s: int, pct_bucket_size: float, source: str) -> Table:
+    counts: dict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0])
+    for time_remaining, pct_change, resolved_yes in rows:
+        t_key = (time_remaining // time_bucket_s) * time_bucket_s
+        p_index = round(pct_change / pct_bucket_size)
+        counts[(t_key, p_index)][0] += 1
+        counts[(t_key, p_index)][1] += resolved_yes
     table: Table = {k: (v[0], v[1] / v[0]) for k, v in counts.items()}
-    logger.info(
-        "Lookup table built: %d files  %d rows  %d cells",
-        len(files),
-        total_rows,
-        len(table),
-    )
+    logger.info("Lookup table built from %s: %d rows  %d cells", source, len(rows), len(table))
     return table
 
 

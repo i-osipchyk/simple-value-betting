@@ -14,6 +14,8 @@ from pathlib import Path
 
 from watchfiles import Change, awatch
 
+import history
+import lookup
 import trades
 from config import MODELS, settings
 from features import load_features
@@ -71,11 +73,21 @@ async def watch_and_resolve() -> None:
                 logger.exception("Failed to process resolution file %s", res_file.name)
 
         if parquet_files:
-            await _run_training()
+            await _run_training(parquet_files)
 
 
-async def _run_training() -> None:
+async def _run_training(new_parquet_files: list[Path]) -> None:
     async with _train_lock:
+        for path in new_parquet_files:
+            await asyncio.to_thread(history.append_parquet, path)
+
+        conn = history.get_connection()
+        table = await asyncio.to_thread(
+            lookup.build_from_db, conn,
+            30, 0.001, settings.candle_interval_minutes * 60,
+        )
+        lookup.set_table(table)
+
         models_due = []
         for model_cfg in MODELS:
             mid = model_cfg["id"]
