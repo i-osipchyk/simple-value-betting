@@ -36,6 +36,53 @@ jobs:
           role-to-assume: ${{ steps.env.outputs.name == 'prod' && secrets.AWS_ROLE_ARN_PROD || secrets.AWS_ROLE_ARN_DEV }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Ensure EC2 instance is running
+        run: |
+          ASG="polymarket-${{ steps.env.outputs.name }}-ecs-asg"
+          REGION="${{ secrets.AWS_REGION }}"
+
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:aws:autoscaling:groupName,Values=$ASG" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text --region $REGION)
+
+          if [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "None" ]]; then
+            echo "No instance found — scaling up ASG"
+            aws autoscaling update-auto-scaling-group \
+              --auto-scaling-group-name $ASG --min-size 1 --desired-capacity 1 \
+              --region $REGION
+            sleep 60
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters "Name=tag:aws:autoscaling:groupName,Values=$ASG" \
+              --query 'Reservations[0].Instances[0].InstanceId' \
+              --output text --region $REGION)
+          fi
+
+          STATE=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text --region $REGION)
+
+          if [[ "$STATE" == "stopped" ]]; then
+            echo "Starting instance $INSTANCE_ID..."
+            aws ec2 start-instances --instance-ids $INSTANCE_ID --region $REGION
+            aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region $REGION
+            aws autoscaling exit-standby \
+              --instance-ids $INSTANCE_ID \
+              --auto-scaling-group-name $ASG \
+              --region $REGION || true
+          fi
+
+          echo "Waiting for ECS agent to register..."
+          for i in $(seq 1 12); do
+            COUNT=$(aws ecs list-container-instances \
+              --cluster polymarket-${{ steps.env.outputs.name }}-cluster \
+              --query 'length(containerInstanceArns)' --output text --region $REGION)
+            [[ "$COUNT" -ge 1 ]] && echo "ECS agent ready" && break
+            echo "Attempt $i/12 — waiting 15s..."
+            sleep 15
+          done
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2

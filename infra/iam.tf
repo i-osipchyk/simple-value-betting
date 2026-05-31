@@ -185,6 +185,28 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
           "ecs:DescribeTaskDefinition",
           "ecs:UpdateService",
           "ecs:DescribeServices",
+          "ecs:ListContainerInstances",
+        ]
+        Resource = ["*"]
+      },
+      {
+        Sid    = "EC2Start"
+        Effect = "Allow"
+        Action = [
+          "ec2:StartInstances",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+        ]
+        Resource = ["*"]
+      },
+      {
+        Sid    = "ASGStandby"
+        Effect = "Allow"
+        Action = [
+          "autoscaling:ExitStandby",
+          "autoscaling:UpdateAutoScalingGroup",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:DescribeAutoScalingGroups",
         ]
         Resource = ["*"]
       },
